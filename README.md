@@ -5,7 +5,7 @@ OpenStack5_LabGuide
 
 This Guide is developed on Redhat's enterprise distribution of OpenStack. 
 
-
+The latest compiled version of this guide can be found at http://people.redhat.com/tonyv/openstack5_labguide/
 You will need to set the following variables fefore starting you install.
 
 [Add to your bashrc on all nodes]
