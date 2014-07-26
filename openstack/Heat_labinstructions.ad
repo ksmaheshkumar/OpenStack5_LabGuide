@@ -1,0 +1,195 @@
+=== Orchestration service
+
+
+Source you admin profile
+....
+source keystone_admin.rc 
+....
+
+Prerequisites. This chapter assumes that you already have a working OpenStack environment with at least the following components installed: `Nova, Glance, Keystone` running
+
+Install required packages:
+`[On Controller]`
+....
+yum install -y openstack-heat-api openstack-heat-engine  openstack-heat-api-cfn
+....
+
+=== Create a Heat database
+
+TIP: We set the mysql root password to "redhat"
+
+`[On Controller]`
+*Example SQL*
+# mysql -u root -p
+
+CREATE DATABASE heat;
+GRANT ALL ON heat.* TO 'heat'@'YOUR_FULL_HOSTNAME' IDENTIFIED BY 'redhat';
+GRANT ALL ON heat.* TO 'heat'@'%' IDENTIFIED BY 'redhat';
+GRANT ALL ON heat.* TO 'heat'@'localhost' IDENTIFIED BY 'redhat';
+FLUSH PRIVILEGES;`
+quit
+
+use `osp_sql_create` script to ensure proper DB creation. This script will create a service.sql file
+
+`[On Controller]`
+....
+/root/osp_sql_create heat heat
+....
+
+Then execute the following command to create the database.
+
+`[On Controller]`
+....
+mysql -u root -p < /root/heat.sql
+....
+
+TIP: Run the following command to inject SQL to database
+`mysql -u root -p < /root/heat.sql`
+
+=== Update heat configuration with database connection string
+....
+openstack-config --set /etc/heat/heat.conf database connection mysql://heat:redhat@${OSPCTRL}/heat
+....
+
+=== Initalize the heat tables
+This command creates the initial heat database tables
+....
+ su -s /bin/sh -c "heat-manage db_sync" heat &>/var/log/heat/heat_sync
+....
+
+=== Register the orchestration service
+....
+keystone service-create --name=heat --type=orchestration  --description="Heat Orchestration Service"
+....
+=== Create a heat keystone user
+....
+keystone user-create --name=heat --pass=redhat
+keystone user-role-add --user=heat --tenant=service --role=admin
+....
+=== Register the cloudformation service
+....
+keystone service-create --name=heat-cfn --type=cloudformation --description="Heat Orchestration CloudFormation"
+....  
+=== Create the Heat Endpoint
+....
+ keystone endpoint-create \
+  --service-id=$(keystone service-list | awk '/ orchestration / {print $2}') \
+  --publicurl=http://${OSPCTRL}:8004/v1/%\(tenant_id\)s \
+  --internalurl=http://${OSPCTRL}:8004/v1/%\(tenant_id\)s \
+  --adminurl=http://${OSPCTRL}:8004/v1/%\(tenant_id\)s
+....
+
+=== Create the Heat Cloud Formation  Endpoint
+....
+ keystone endpoint-create \
+  --service-id=$(keystone service-list | awk '/ cloudformation / {print $2}') \
+  --publicurl=http://${OSPCTRL}:8000/v1 \
+  --internalurl=http://${OSPCTRL}:8000/v1 \
+  --adminurl=http://${OSPCTRL}:8000/v1
+....
+
+=== Create the heat_stack_user role
+....
+keystone role-create --name heat_stack_user
+....
+
+=== Configure heat metadata
+....
+openstack-config --set /etc/heat/heat.conf DEFAULT heat_metadata_server_url http://${OSPCTRL}:8000
+openstack-config --set /etc/heat/heat.conf DEFAULT heat_waitcondition_server_url http://${OSPCTRL}:8000/v1/waitcondition
+....
+
+=== Configure /etc/heat/heat.com
+....
+openstack-config --set /etc/heat/heat.conf keystone_authtoken paste.filter_factory heat.common.auth_token:filter_factory
+openstack-config --set /etc/heat/heat.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/heat/heat.conf keystone_authtoken auth_port 35357
+openstack-config --set /etc/heat/heat.conf keystone_authtoken admin_protocal http
+openstack-config --set /etc/heat/heat.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/heat/heat.conf keystone_authtoken admin_user heat
+openstack-config --set /etc/heat/heat.conf keystone_authtoken admin_password redhat
+openstack-config --set /etc/heat/heat.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000/v2.0
+....
+
+=== Start heat services and systemble on boots
+
+....
+service openstack-heat-api start
+service openstack-heat-api-cfn start
+service openstack-heat-engine start
+
+chkconfig openstack-heat-api on
+chkconfig openstack-heat-api-cfn on
+chkconfig openstack-heat-engine on
+....
+
+
+=== Heat Template
+For this lab we can use a test heat template you controller has this file prestaged at /heat/heatstack.yml
+
+Inspect the yml file cat 
+....
+cat /root/heatstack.yml
+....
+
+=== Set up variables for use with heat
+
+Use the internal network
+WARNING: make sure that you have completed the basic neutron lab
+
+
+WARNING: Make sure that you have upload the glance image from /images/ and called it openlab_f20
+You can validate that you have the image by `glance image-list |grep openlab_f20`
+
+
+=== Create a stack for yml file
+Use `heat stack-create` to create a stack from the template
+
+....
+INT_ID=`neutron net-list | awk '/intranet/ { print $2 }'`
+echo "Heat will use internal network with the id of $INT_ID"
+....
+
+WARNING: This lab expected the suceessfully completion of the glance,nova and neutron labs
+
+....
+heat stack-create -f /root/heatstack.yml -P "ImageID=openlab_f20;NetID=$INT_ID" heatstack0
+....
+
+=== Get the status of you heat deployment
+....
+heat stack-list
+....
+
+.Sample Output
+----
++--------------------------------------+------------+-----------------+----------------------+
+| id                                   | stack_name | stack_status    | creation_time        |
++--------------------------------------+------------+-----------------+----------------------+
+| 874303f5-ff33-4285-9c93-9f96c5d2fdf9 | heatstack0 | CREATE_COMPLETE | 2014-06-04T23:15:12Z |
++--------------------------------------+------------+-----------------+----------------------+
+----
+
+
+
+==== Get VNC Console URL for heat deployment
+
+WARNING:`nova list` must indicate Status `ACTIVE` before proceeding to next step
+You can use then `nova get-vnc-console` to get console info
+
+nova get-vnc-console <server_name> novnc
+....
+nova get-vnc-console server novnc
+....
+
+----
++-------+---------------------------------------------------------------------------------------------------------+
+| Type  | Url                                                                                                     |
++-------+---------------------------------------------------------------------------------------------------------+
+| novnc | http://ospctrl0-<guid>.rhpds.opentlc.com:6080/vnc_auto.html?token=2176225b-205c-42a7-b79f-f2926fa870a0  |
++-------+---------------------------------------------------------------------------------------------------------+
+----
+
+TIP: If you want to give this server external access make sure to add it to the openlab security group.
+
+

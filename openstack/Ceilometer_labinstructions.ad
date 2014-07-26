@@ -1,0 +1,360 @@
+=== Metering Service
+
+CAUTION: Ceilometer can be resource intensive in large environment in production installation. You may wan to consider dedicating a node to Ceilometer 
+
+The Metering Server in OpenStack is known as `Ceilometer` this component enables the ability to collect data from OpenStack infrastructure.  It's designed to be accessed via REST API. Ceilometer produces signed metering messages that cannot be repudiated. Ceilometer uses a database capable of handling concurrent writes (from one or more collector instances) and reads (from the API server).
+
+Cinder's main function is to virtualize pools of block storage and provides end users with a self service API to request and consume those resources without requiring any knowledge of how to manage the back-end storage device.Telemetry messages are written to the data store without modification.
+
+Ceilometer Components
+`ceilometer-api`. This components runs on one or more central management servers to provide access to the data from the data store.
+
+`ceilometer-agent-computer`. This components runs on each compute node and polls for resource utilization statistics. There may be other types of agents in the future, but for now we will focus on creating the compute agent.
+
+`ceilometer-agent-central`. This components runs on a central management server to poll for resource utilization statistics for resources not tied to instances or compute nodes.
+
+`ceilometer-collector`. This components runs on one or more central management servers to monitor the message queues. The collector watches for notifications and for metering data coming from the agent.messages are processed and turned into metering messages and sent back out onto the message bus using the appropriate topic. 
+
+`ceilometer-alarm-notifierr`. Runs on one or more central management servers to allow setting alarms based on threshold evaluation for a collection of samples.
+
+NOTE: In this lab we will be using a mongodb database back-end to store the collected data
+
+
+=== Install the Ceilometer Packages
+
+The OpenStack Metering service requires the following packages: 
+`openstack-ceilometer-api`
+`openstack-ceilometer-collector`
+`openstack-ceilometer-notification` 
+`openstack-ceilometer-central`
+`openstack-ceilometer-alarm` 
+`python-ceilometerclient`
+
+TIP: In this lab we will be using mongodb as the backend to celilometer  
+Install the Ceilometer packages for the Block Metering service:
+
+`[On Controller]`
+....
+yum install -y openstack-ceilometer-api openstack-ceilometer-collector \
+openstack-ceilometer-notification openstack-ceilometer-central \
+openstack-ceilometer-alarm python-ceilometerclient
+....
+
+=== Install MongoDB for use with Ceilometer
+....
+yum -y install mongodb-server mongodb
+....
+
+Change the bind ip in /etc/mongodb.conf to point to 0.0.0.0
+
+`[On Controller]`
+....
+sed -i 's/^bind_ip\ =.*$/bind_ip=\ 0.0.0.0/' /etc/mongodb.conf
+....
+
+=== Configure the database connection string
+To minimize the space allocated to support database journaling then set the smallfiles configuration key to true in the /etc/mongodb.conf configuration file. This configuration reduces the size of each journaling file to 512 MB.
+
+Set smallfiles to true in /etc/mongodb.conf
+
+`[On Controller]`
+....
+echo "smallfiles=true" >>/etc/mongodb.conf
+....
+
+=== Start MongoDB and enable on boot
+
+`[On Controller]`
+....
+service mongod start
+chkconfig mongod on
+....
+
+=== Configure Block Storage to use the Image Service. 
+Block Storage needs access to images to create bootable volumes.
+
+`[On Controller]`
+....
+openstack-config --set /etc/cinder/cinder.conf DEFAULT glance_host ${OSPCTRL}
+....
+
+=== Configure MongoDB for use with OpenStack
+Create the database and a ceilometer database user. Set the database user password to redhat
+
+`[On Controller]`
+....
+mongo --host ${OSPCTRL} --eval 'db = db.getSiblingDB("ceilometer");db.addUser({user: "ceilometer",pwd: "redhat",roles: [ "readWrite", "dbAdmin" ]})'
+....
+
+TIP: echo ${OSPCTRL} # Make sure it set to reference the controller where we installed MongoDB
+
+=== Set connection string
+Set the database connection string to point to mongodb
+
+`[On Controller]`
+....
+openstack-config --set /etc/ceilometer/ceilometer.conf \
+  database connection mongodb://ceilometer:redhat@${OSPCTRL}:27017/ceilometer
+....
+
+=== Configure firewall
+Open firewall for MongoDB communication where Mongo is hosted
+NOTE: In our lab MongoDB lives on the controller
+
+`[On Controller]`
+....
+lokkit --port 27017:tcp
+....
+
+
+=== Define a secrect key
+You must define a secret key that will be  used as a shared secret on the Ceilomter nodes. 
+
+TIP: Use openssl to generate a random token and store it in the configuration file: 
+
+`[On Controller]`
+....
+METERING_TOKEN=$(openssl rand -hex 10)
+echo $METERING_TOKEN
+openstack-config --set /etc/ceilometer/ceilometer.conf publisher metering_secret $METERING_TOKEN
+echo $METERING_TOKEN >/root/metering_secret
+....
+
+=== Create a copy of the metering_secret file on the compute node
+
+TIP We will need this use this token on the compute node
+....
+scp /root/metering_secret $NOVA:/root
+....
+
+
+=== Configure Ceilomter to use QPID 
+
+`[On Controller]`
+....
+openstack-config --set /etc/ceilometer/ceilometer.conf DEFAULT rpc_backend ceilometer.openstack.common.rpc.impl_qpid
+....
+
+=== Create the ceilometer user
+
+This user is will be use to  authenticate with the Identity Service. Use the service tenant and give the user the admin role
+
+
+`[On Controller]`
+....
+keystone user-create --name=ceilometer --pass=redhat
+keystone user-role-add --user=ceilometer --tenant=service --role=admin
+....
+
+Configure the Telemetry service to authenticate with the Identity Service. Set the auth_strategy value to keystone in the /etc/ceilometer/ceilometer.conf file:
+
+`[On Controller]`
+....
+openstack-config --set /etc/ceilometer/ceilometer.conf DEFAULT auth_strategy keystone
+....
+
+=== Configure   /etc/ceilometer/ceilometer.conf 
+
+Set the credentials in the configuration files
+
+`[On Controller]`
+....
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken admin_user ceilometer
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken auth_protocol http
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken admin_password redhat
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_auth_url http://${OSPCTRL}:5000/v2.0
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_username ceilometer
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_tenant_name service
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_password redhat
+....
+
+=== Create the metering service
+
+`[On Controller]`
+....
+ keystone service-create --name=ceilometer --type=metering --description="OpenStack Metering Service"
+....
+
+=== Create the metering endpoint
+`[On Controller]`
+
+....
+keystone endpoint-create \
+  --service-id=$(keystone service-list | awk '/ metering / {print $2}') \
+  --publicurl=http://${OSPCTRL}:8777 \
+  --internalurl=http://${OSPCTRL}:8777 \
+  --adminurl=http://${OSPCTRL}:8777
+
+....
+
+=== Start and configure the metering services to start when the system boots:
+
+`[On Controller]`
+....
+service openstack-ceilometer-api start
+service openstack-ceilometer-notification start
+service openstack-ceilometer-central start
+service openstack-ceilometer-collector start
+service openstack-ceilometer-alarm-evaluator start
+service openstack-ceilometer-alarm-notifier start
+
+chkconfig openstack-ceilometer-api on
+chkconfig openstack-ceilometer-notification on
+chkconfig openstack-ceilometer-central on
+chkconfig openstack-ceilometer-collector on
+chkconfig openstack-ceilometer-alarm-evaluator on
+chkconfig openstack-ceilometer-alarm-notifier on
+....
+
+=== Configure the Glance for metering 
+
+Configure Glance e to send notifications to the bus.
+
+`[On Controller]`
+....
+openstack-config --set /etc/glance/glance-api.conf DEFAULT notification_driver messaging
+openstack-config --set /etc/glance/glance-api.conf DEFAULT rpc_backend qpid
+....
+
+=== Restart Image services 
+
+`[On Controller]`
+....
+service openstack-glance-api restart
+service openstack-glance-registry restart
+....
+
+
+=== Configure the Cinder for metering
+Configure Cinder to send notifications to the bus.
+
+`[On Controller]`
+....
+openstack-config --set /etc/cinder/cinder.conf DEFAULT control_exchange cinder
+openstack-config --set /etc/cinder/cinder.conf DEFAULT notification_driver cinder.openstack.common.notifier.rpc_notifier
+....
+
+=== Restart Block Storage services
+
+
+`[On Controller]`
+....
+service openstack-cinder-api restart
+service openstack-cinder-scheduler restart
+service openstack-cinder-volume restart
+....
+
+=== Configure the Ceilometer agent on the Compute Node
+CAUTION: Make sure you are doing the following step on the Compute Node
+
+Install the following Ceilometer packages on the Compute Node:
+`openstack-ceilometer-compute`
+`python-ceilometerclient`
+`python-pecan`
+
+
+`[On Compute Node]`
+....
+ yum install -y openstack-ceilometer-compute python-ceilometerclient python-pecan
+....
+
+
+=== Update Nova configs on Compute Node to support metering
+
+Update options in the /etc/nova/nova.conf file:
+
+`[On Compute Node]`
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT instance_usage_audit True
+openstack-config --set /etc/nova/nova.conf DEFAULT instance_usage_audit_period hour
+openstack-config --set /etc/nova/nova.conf DEFAULT notify_on_state_change vm_and_task_state
+openstack-config --set /etc/nova/nova.conf DEFAULT notification_driver nova.openstack.common.notifier.rpc_notifier
+....
+
+Edit the /etc/nova/nova.conf and add the following line under notification_driver line in the DEFAULT section
+
+....
+ [DEFAULT]
+notification_driver = ceilometer.compute.nova_notifier
+....
+
+
+=== Restart the Compute service
+
+`[On Compute Node]`
+....
+service openstack-nova-compute restart
+....
+
+=== Set the Metering Token
+`[On Compute Node]`
+
+TIP: `/root/metering_secret` was copied from the controller in previous steps
+
+....
+METERING_TOKEN=`cat /root/metering_secret`
+echo $METERING_TOKEN
+openstack-config --set /etc/ceilometer/ceilometer.conf publisher metering_secret  $METERING_TOKEN
+....
+
+=== Configure Ceilometer to use QPID on the Compute Node
+
+`[On Compute Node]`
+....
+openstack-config --set /etc/ceilometer/ceilometer.conf DEFAULT qpid_hostname  ${OSPCTRL}
+....
+
+=== Configure Identity authentication 
+
+`[On Compute Node]`
+....
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken admin_user ceilometer
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken auth_protocol http
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken admin_password redhat
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_username ceilometer
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_tenant_name service
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_password redhat
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_auth_url http://${OSPCTRL}:5000/v2.0
+....
+
+=== Enable metering service and configure start on boot
+
+
+`[On Compute Node]`
+....
+service openstack-ceilometer-compute start
+chkconfig openstack-ceilometer-compute on
+....
+
+=== Validate Metering installation
+
+`[On Controller]`
+....
+ceilometer meter-list
+....
+
+Download an image from the Image Service
+`[On Controller]`
+....
+glance image-download "openlab_f20" > f20.img
+....
+
+
+Call the ceilometer `meter-list` command again to verify that the the image download has been detected and stored in the metering database.
+
+`[On Controller]`
+....
+ceilometer meter-list
+....
+
+=== Create a custom report
+
+`[On Controller]`
+....
+ceilometer statistics -m image.download -p 60
+....

@@ -1,0 +1,199 @@
+== Creating Software Defined Network (Advanced) - In development
+
+[WARNING]
+ If you have completed the Basic networking section you have already defined a public network called `external` this will have to be deleted before you can do the advanced lab. *You will need to remove the all the SDN components that are using the `external` before you can delete it.* 
+
+
+TIP: Logon to the Controller Node to create networks
+....
+source  keystone_admin.rc
+....
+
+`[On Controller]`
+....
+neutron net-create public --shared --router:external=True
+neutron net-create corporate --shared 
+neutron net-create engineering  --shared 
+....
+
+.Sample Output:*
+----
++---------------------------+--------------------------------------+
+| Field                     | Value                                |
++---------------------------+--------------------------------------+
+| admin_state_up            | True                                 |
+| id                        | 7f6143fc-251e-4fd5-a111-fb5ea51b5919 |
+| name                      | external                             |
+| provider:network_type     | gre                                  |
+| provider:physical_network |                                      |
+| provider:segmentation_id  | 1                                    |
+| router:external           | True                                 |
+| shared                    | True                                 |
+| status                    | ACTIVE                               |
+| subnets                   |                                      |
+| tenant_id                 | b885d22ae8e94f6a902bc479219bc998     |
++---------------------------+--------------------------------------+
+
+----
+
+=== Create a subnet on the public network
+
+Add eth2 to the bridge interface
+
+`[On Controller]`
+....
+ovs-vsctl add-port br-ex eth2
+....
+
+NOTE: eth2 will be a dedicated port that we can use for OSP traffic
+
+You external subnet is determined my the following scheme
+172.0.X.10,end=172.0.X.100
+
+`[On Controller]`
+.Example for Student 0
+****
+....
+neutron subnet-create public --name pub-subnet --allocation-pool start=172.0.0.2,end=172.0.0.50 --gateway 172.0.0.1 172.0.0.0/24 --disable-dhcp --dns-nameserver=8.8.8.8
+....
+****
+
+....
+neutron subnet-create public --name pub-subnet --allocation-pool start=172.0.0.2,end=172.0.0.50 --gateway 172.0.X.1 172.0.X.0/24 --disable-dhcp --dns-nameserver=8.8.8.8
+....
+
+TIP: X is you workstation ID or Student ID
+
+=== Create internal subnets
+
+`[On Controller]`
+....
+neutron subnet-create corporate --name  hr-subnet --gateway 80.0.1.1 80.0.1.0/24 --dns-nameserver 8.8.8.8
+neutron subnet-create corporate --name  mk-subnet --gateway 80.0.2.1 80.0.2.0/24 --dns-nameserver 8.8.8.8
+neutron subnet-create engineering --name dev-subnet --gateway 80.0.3.1 80.0.3.0/24 --dns-nameserver 8.8.8.8
+neutron subnet-create engineering --name eng-subnet --gateway 80.0.4.1 80.0.4.0/24 --dns-nameserver 8.8.8.8
+....
+
+.Sample Output:
+----
++------------------+--------------------------------------------+
+| Field            | Value                                      |
++------------------+--------------------------------------------+
+| allocation_pools | {"start": "80.0.4.2", "end": "80.0.4.254"} |
+| cidr             | 80.0.4.0/24                                |
+| dns_nameservers  | 8.8.8.8                                    |
+| enable_dhcp      | True                                       |
+| gateway_ip       | 80.0.4.1                                   |
+| host_routes      |                                            |
+| id               | 91627c9e-023e-477e-9faa-d970f53d26c0       |
+| ip_version       | 4                                          |
+| name             | eng-subnet                                 |
+| network_id       | 449ee5d9-4a3e-4290-8c1c-4e6fb82c3d5d       |
+| tenant_id        | cb29917032744e47926ec66cc4746e61           |
++------------------+--------------------------------------------+
+
+----
+
+=== Create routers
+`[On Controller]`
+....
+neutron router-create hr_router
+neutron router-create mk_router
+neutron router-create eng_router
+neutron router-create dev_router
+....
+
+=== Attach subnet to routers
+`[On Controller]`
+....
+neutron router-interface-add  hr_router hr-subnet
+neutron router-interface-add  mk_router mk-subnet
+neutron router-interface-add  eng_router eng-subnet
+neutron router-interface-add  dev_router dev-subnet
+....
+
+.Sample Output:
+----
+Added interface e3c707d7-911c-46d6-9a99-9594a3ca4e15 to router intranet router.
+
+----
+
+=== Attach the router to the external network to define a outbound gateway
+
+`[On Controller]`
+....
+neutron router-gateway-set hr_router public
+neutron router-gateway-set mk_router public
+neutron router-gateway-set eng_router public
+neutron router-gateway-set dev_router public
+....
+
+.Sample Output:
+----
+Set gateway for router external
+----
+
+=== Verify connectivity 
+
+`[On Controller]`
+....
+neutron port-list -F fixed_ips
+....
+
+.Sample Output:
+-----
++--------------------------------------------------------------------------------------+
+| fixed_ips                                                                            |
++--------------------------------------------------------------------------------------+
+| {"subnet_id": "1e337300-6eb6-48e3-af63-82736587d127", "ip_address": "9.0.0.1"}       |
+| {"subnet_id": "91627c9e-023e-477e-9faa-d970f53d26c0", "ip_address": "80.0.4.1"}      |
+| {"subnet_id": "78a7ba2a-bd5a-43cd-b15a-67fbfd01b622", "ip_address": "80.0.3.1"}      |
+| {"subnet_id": "35a4d810-3acc-486c-8f68-8da70adc844a", "ip_address": "172.0.0.2"}     |
+| {"subnet_id": "35a4d810-3acc-486c-8f68-8da70adc844a", "ip_address": "172.0.0.5"}     |
+| {"subnet_id": "35fd0e86-a359-42af-a8c3-2a643c5e4828", "ip_address": "80.0.2.1"}      |
+| {"subnet_id": "35a4d810-3acc-486c-8f68-8da70adc844a", "ip_address": "172.0.0.3"}     |
+| {"subnet_id": "8c0373d0-15b1-41fa-945d-2292588d88c6", "ip_address": "80.0.1.1"}      |
+| {"subnet_id": "35a4d810-3acc-486c-8f68-8da70adc844a", "ip_address": "172.0.0.4"}     |
+| {"subnet_id": "c95d317e-52d0-4d7b-a111-793f0bf98397", "ip_address": "192.168.0.126"} |
++--------------------------------------------------------------------------------------+
+
+-----
+
+=== Work with namespaces
+
+Use `ip netns` to inspect the qrouter that are created by the above commands
+
+`[On Network Node]`
+....
+ip netns
+....
+
+.Sample Output:
+----
+qrouter-29d6ac74-6fae-4c67-af64-9ea1fddf5b87
+qrouter-67230886-c1bd-46e5-a018-151535bcb943
+qdhcp-aeeed369-afc0-4036-828f-7f0ab226131b
+qdhcp-449ee5d9-4a3e-4290-8c1c-4e6fb82c3d5d
+qrouter-bff07093-4c25-4e04-9b6b-4be73219938b
+qrouter-8c97a32d-c1bb-4992-b8ae-e66d7716120b
+qrouter-592fa93a-2b31-44c9-9c63-290cde99baa3
+qdhcp-a3c35547-c5d9-462b-80bb-f9280e8a8a2e
+----
+
+On the Network node check route any qdhcp instance by issuing the `ip netns exec command`
+`[On Network Node]`
+....
+ ip netns exec <qdhcp-id-listed-above> netstat -rn
+....
+
+.Sample Output:
+----
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags   MSS Window  irtt Iface
+80.0.1.0        0.0.0.0         255.255.255.0   U         0 0          0 tapad4808ec-a6
+80.0.2.0        0.0.0.0         255.255.255.0   U         0 0          0 tapad4808ec-a6
+0.0.0.0         80.0.2.1        0.0.0.0         UG        0 0          0 tapad4808ec-a6
+----
+
+
+

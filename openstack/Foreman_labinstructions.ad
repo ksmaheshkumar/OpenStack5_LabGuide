@@ -1,0 +1,367 @@
+=== Foreman 
+Before we start the core OSP5 lab which consists of the manual installation of Red Hat OpenStack Platform, we will complete an automated installation using Foreman. This will demonstrate how you can use Foreman in production to quickly and easily deploy Red Hat OpenStack Platform.
+
+=== Foreman Server
+==== Environmental Info:
+In this environment we will be dealing with three Networks and two servers:
+Foreman Server:
+Foreman Client:
+
+The Foreman server will have only hava access to networks: PUBLIC/DEPLOY
+The Foreman client will have three: PUBLIC/DEPLOY and OPENSTACK (Isolated Network)
+
+This lab covers deploying Foreman in deployment mode 
+[TIP]
+For full production environment you will want to split the Openstack network into OpenStack Public and OpenStack Private for optional performance and security
+
+==== Description of Networks
+[TIP]
+*(X replaced by StationID)*
+All lab envrionment provisioned via RHPDS will have StationID of `0`
+
+==== Foreman *Server* IP allocations
+eth0: IP address will be `192.168.0.(X+20)` (X replaced by StationID)
+For example Station 0 foreman server:eth0 will be 192.168.0.(20)
+
+==== Foreman *Client* interfaces (2 interfaces)
+eth0: `(OSP Public)` Openstack public interface
+eth1: `(OSP Private)` Openstack private interface
+
+[NOTE] 
+Each student will have an entier private subnet 192.168.(X+40).40
+`eth0` is public and used for management
+`eth1` is private/internal and used for Neutron only
+
+
+==== OSP Controller IP allocations
+eth0: IP address will be `192.168.0.(X+40)` (X replaced by StationID)
+eth1: IP address will be `10.254.(X+40).40` (X replaced by StationID) 
+For example student 0 (controller)foreman client:eth0 will be 192.168.0.(40)
+For example student 0 (controller)foreman client:eth1 will be 10.254.(40).40
+
+
+[NOTE]
+OSP Controller (ospcrtl) is a foreman Clients at the completion of this lab this server will be a openstack all-in-one installation - Configured by foreman.
+
+==== Connect to lab environment 
+Ensure connectivity to servers (validate by opening ssh session to servers)
+
+Foreman server 
+
+`[Foreman Server]`
+....
+ssh root@foreman-<guid>.rhpds.opentlc.com 
+....
+
+and
+
+`[OSP Controller]`
+....
+ssh root@ospctrl-<guid>.rhpds.opentlc.com 
+....
+
+[IMPORTANT]
+Your `guid` is your assigned unique lab id. For example if your lab guid is(e3b4)
+your hostnames would be:
+`foreman-e3b4.rhpds.opentlc.com`
+`ospctrl-e3b4.rhpds.opentlc.com`
+
+Your `guid` info was sent to you via email when you complete your registration 
+
+==== Lab1 Setup Foreman Server
+
+[CAUTION]
+[red]#*DO NOT CONTINUE if hostname is not set correcly*#
+*Foreman requires proper fqdn*
+
+Verify fully qualified hostname
+
+....
+hostname -f
+....
+Output should resemble foreman-<guid>.rhpds.opentlc.com
+
+
+[TIP]
+You can temporarly correct this issue by using hostname command
+
+hostname foreman-<guid>.rhpds.opentlc.com
+
+To presist hostname update /etc/sysconfig/network
+
+
+==== Configure the firewall on the foreman server
+* We will need to allow access to the following ports
+
+** dns port 53
+** http port 80
+** https port 443
+** puppet port 8140
+** dns port 53:udp
+** tftp port 69:udp
+
+`[Foreman Server]`
+....
+lokkit --port 53:tcp
+lokkit --port 80:tcp
+lokkit --port 443:tcp
+lokkit --port 8140:tcp
+lokkit --port 53:udp
+lokkit --port 69:udp
+....
+
+==== Installing Foreman packages
+
+[TIP]
+The Foreman installer Foreman_server.sh expects the system to be configured with a fully qualified domain name (FQDN). The hostname can be verified with the command _#hostname -f_ command The expected output would be similar to this example FQDN: foreman.example.org
+Otherwise, review the hostname settings in /etc/hosts and /etc/sysconfig/network.
+
+Log in to the system that will host the Foreman installation as the root user.
+
+
+`[Foreman Server]`
+....
+yum install -y openstack-foreman-installer foreman-selinux
+....
+
+
+==== Setup Foreman variables
+The nodes will use this gateway to access installation media during the provisioning process:
+	
+[NOTE]
+In this lab network we have local repo setup via the admin server so we do not net a Foreman gateway. So we will set the the `FOREMAN_GATEWAY=false`
+
+Set `FOREMAN_PROVISIONING=false` because we are using Foreman in deployment mode (We are servers with preinstalled operating systems)
+
+
+Set the following Variables 
+`[Foreman Server]`
+....
+export FOREMAN_GATEWAY=false
+export FOREMAN_PROVISIONING=false
+....
+
+Change directory to cd /usr/share/openstack-foreman-installer/bin/
+
+`[Foreman Server]`
+....
+cd /usr/share/openstack-foreman-installer/bin/
+sh ./foreman_server.sh
+#################### RED HAT OPENSTACK #####################
+Thank you for using the Red Hat OpenStack Foreman Installer!
+############################################################
+Press [Enter] to continue
+....
+
+Be patient this may take 5 min or so [red]#(Do not Control+C)#
+Prompt will be returned once installation finishes
+After installer completes you will have successfully installed a Foreman server. 
+
+[NOTE]
+Foreman is installed and almost ready for setting up your OpenStack
+You'll find Foreman at https://foreman-<guid>.rhpds.opentlc.com
+The user name is 'admin' and default password is 'changeme'.
+
+[WARNING]
+You will see the following error which can be *ignored* 
+[red]#*Warning: Config file /etc/puppet/hiera.yaml not found, using Hiera defaults*#
+
+==== Foreman web UI
+Open a web browser to http://foreman-<guid>.rhpds.opentlc.com
+Accept the insecure host alert and proceed to login
+Login username admin (default)
+Login password changeme (default)
+[.left.thumb]
+image::lab/foreman_inital_login.png[osplab2.0]
+
+[.left.thumb]
+image::lab/foreman_inital_screen.png[osplab2.1]
+[NOTE]
+This is an initial screen that will disappear after you configure Foreman
+
+Click on the hosts tab
+
+
+[.left.thumb]
+image::lab/foreman_click_host.png[osplab2.1]
+[NOTE]
+Note there are no clients managed by Foreman. We will add clients later in the lab
+
+=== Foreman Client
+
+This procudures need to be done on the all foreman client. We will now add ospctrl to foreman. `ospctrl-<guid>.rhpds.opentlc.com` 
+
+
+TIP: Open a ssh session to your foreman client
+
+
+`[OSP Controller]`
+....
+ssh  root@ospctrl-<guid>.rhpds.opentlc.com
+....
+
+==== Configure the firewall on the foreman client
+We will need to allow access to the following ports
+
+. dns port 53
+. http port 80
+. https port 443
+. puppet port 8140
+. dns port 53:udp
+. tftp port 69:udp
+
+`[Foreman Client]`
+....
+lokkit --port 53:tcp
+lokkit --port 80:tcp
+lokkit --port 443:tcp
+lokkit --port 8140:tcp
+lokkit --port 53:udp
+lokkit --port 69:udp
+....
+
+
+==== Configure the Foreman Client Install script
+From *ALL* Client servers run the following scp command which will copy the foreman cleint script locally
+
+`[All Foreman Client]` *= OSP Controller/All Compute Nodes*
+....
+scp root@foreman-<guid>.rhpds.opentlc.com:/tmp/foreman_client.sh /root
+....
+
+Example: (Student 0) 
+
+`[Controller]`
+....
+scp root@foreman-<guid>.rhpds.opentlc.com:/tmp/foreman_client.sh /root
+....
+`[Compute]`
+....
+scp root@foreman-<guid>.rhpds.opentlc.com:/tmp/foreman_client.sh /root
+....
+
+TIP: You should now have a copy of the `foreman_client.sh` in the root directory on *all* your foreman clients. You will need accept the propmpts to _Permanently add_ ssh keys, when prompted say `yes` and enter your root password
+
+
+Execute the foreman_client shell script *On the client*
+
+`[Foreman Client]`
+....
+sh /root/foreman_client.sh
+....
+
+
+[TIP]
+If you get the following error: [red]#*Could not request certificate: Connection timed out - connect(2)*#
+*Check that you can ping the server from the client and firewall is properly configured on all servers*
+
+
+After the puppet run finishes Go to the foreman gui and browse the hosts tab you should now see the hosts you have added
+
+
+image::lab/foreman_hosts.png[osplab2.2]
+
+====  Changing Foreman parameters
+Open a web browser to Foreman server and edit the parameters on multiple host groups. 
+
+
+CAUTION: If you have low res screen the `More button` will change to a Square with three lines, This signals that you are in mobile mode. Click on the square next to the Square with three lines to get the More menu.
+
+
+Go to https://foreman-<guid>.rhpds.opentlc.com/hostgroups/3-controller-neutron/edit
+
+[TIP]
+In the url below replace X with you student id
+
+NOTE: You can also navigate to the hostgroups by using the menus provided in the GUI path to the hostgroup configuration screen is More>Configuration>HostGroups
+
+The go to the *Parameters* tab and override the following:
+`admin_password`
+`controller_priv_host`
+`controller_pub_host`
+`mysql_host`
+`qpid_host`
+
+Scroll down and you will see the selected parameters and a text field next to it in which you can override the default values
+
+image::lab/foreman_override.png[osplab2.4]
+
+
+Set the value:
+`admin_password` = redhat
+`controller_priv_host` = (controllers br-ex ip)
+`controller_pub_host` (controllers br-int ip)
+`mysql_host` = (controllers br-ex ip)
+`qpid_host` = (controllers br-ex ip)
+
+.Sample Config fore Student 0:
+----
+:::::::::::::::::::::::::::::::::::::::::
+Your Configuration:
+controller_priv_host = 192.168.40.40
+controller_pub_host = 192.168.0.40
+mysql_host = 192.168.0.40
+qpid_host = 192.168.0.40
+:::::::::::::::::::::::::::::::::::::::::
+----
+
+CAUTION: Don't forget to set the admin_password to redhat
+
+Submit changes
+
+You have just edited the controller host group you need to do the same action on the compute host group which can be reached at the following url
+https://foreman-<guid>.rhpds.opentlc.com/hostgroups/4-compute-neutron/edit
+/
+
+
+Set the following value:
+`admin_password` = redhat
+`controller_priv_host` = (controllers br-ex ip)
+`controller_pub_host` (controllers br-int ip)
+`mysql_host` = (controllers br-ex ip)
+`qpid_host` = (controllers br-ex ip)
+
+*You need to set a additional value on the compute node:*
+`enable_tunneling` = False
+
+==== Build OpenStack
+Go to the hosts tab select the client check the check box on the left
+
+[WARNING]
+Make sure to not accidentally select your Foreman server
+
+image::lab/foreman_build1.png[foremanb1.1]
+
+Select Change Group from the menu
+
+image::lab/foreman_build2.png[foremanb1.2]
+
+Choose Neutron Controller from the menu
+
+image::lab/foreman_build3.png[foremanb1.3]
+
+[TIP]
+Be sure not to accidently select Nova Controller
+
+image::lab/foreman_build4.png[foremanb1.4]
+
+You are now ready to build the host
+Go to the cli on the client node and run 
+
+....
+puppet agent -tv
+....
+
+
+You can schedule the build from the GUI. For this lab we are going to manually kick off the job from the cli so we can see the build process
+
+image::lab/foreman_build4.png[foremanb1.4]
+
+Once the build is complete you can got to openstack dashboard at
+http://ospctrl-<guid>.rhpds.opentlc.com/dashboard
+uesrname admin
+password redhat
+
+image::lab/foreman_build6.png[foremanb1.5]
+
+

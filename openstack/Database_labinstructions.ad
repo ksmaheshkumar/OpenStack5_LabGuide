@@ -1,0 +1,99 @@
+=== OpenStack Database
+
+CAUTION: Pay attention to the `[Server Designations`]
+
+=== Install OpenStack Packages:
+
+The version of OpenStack that you will be working with is `icehouse`.
+`icehouse` is the 9th release of OpenStack
+
+To configure OpenStack we will need to install the `openstack-utils` and `openstack-selinux` toolkit on all servers. These packages will provide the basic binaries need to build-out an OpenStack environment from scratch. Install following packages on all three servers
+
+
+`[On Controller/Compute/Network]`
+....
+yum -y install openstack-utils
+yum -y install openstack-selinux
+....
+
+=== Install database packages
+Before we install OpenStack we need to install a MySQL database and sync time on all nodes using ntp
+
+OpenStack uses a database to store configuration information.This is a prerequisite for installing the controller.  You will be adding databases and executing commands in this lab that will populate the created databases. 
+
+To get started install the MySQL database server on the Controller Node. 
+Use `yum` to install the following packages:
+
+[NOTE]
+`mysql-server` - Provides the MySQL database server. 
+`mysql` - Provides the MySQL client tools and libraries. 
+`MySQL-python` - Provides the MySQL Python client
+
+`[On Controller]`
+....
+yum -y install mysql mysql-server MySQL-python
+....
+
+==== Edit /etc/my.cnf 
+Edit `/etc/my.cnf` and add the following to the *[mysql]* section
+
+`[On Controller]`
+****
+bind-address = 0.0.0.0
+default-storage-engine = innodb
+collation-server = utf8_general_ci
+init-connect = 'SET NAMES utf8'
+character-set-server = utf8
+****
+
+NOTE: The `/etc/my.cnf` has been pre-staged in this lab please inspect and ensure that the above lines are added.
+
+==== Run mysql installer
+
+`[On Controller]`
+....
+mysql_install_db
+....
+
+==== Firewall configuration for MySQL
+Because of the fact the database service is used by all of the components in the OpenStack environment it must be accessible by them. 
+To allow this the firewall on the system hosting the database service must be altered to allow network traffic on the required port. All steps in this procedure must be run while logged into your Controller as the root user. 
+
+NOTE: Depending on the lab environment firewall rules maybe pre-populated
+
+`[On Controller/Compute/Network]`
+....
+lokkit --port 3306:tcp
+....
+
+==== Start mysql and enable on boot
+TIP: In the icehouse release galera is fully supported as a database option
+
+`[On Controller]`
+....
+service mysqld start
+chkconfig mysqld on
+....
+[NOTE]
+The MySQL database server maintains its own list of user accounts and authentication details including a root user account which is the database administrator account. For security reasons it is recommended that you set a password for the root database user just after the database service was started for the first time.
+
+
+==== Set the database root password
+
+`[On Controller]`
+....
+/usr/bin/mysqladmin -u root password 'redhat'
+....
+TIP: In our training we are using `redhat` as the password. In production it would make sense to use something more secure when performing the installation. 
+
+=== Configure time management
+To make sure the servers have synchronized time and avoid system clock skew related problems we need to start and enable `ntpd` on all three nodes. 
+
+`[On Controller/Compute/Network]`
+....
+yum -y install ntp
+service ntpd start
+chkconfig ntpd on
+....
+
+

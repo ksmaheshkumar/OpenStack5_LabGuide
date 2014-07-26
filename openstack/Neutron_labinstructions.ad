@@ -1,0 +1,1027 @@
+=== Networking Service
+
+
+
+To start open a ssh session to you network node you (you should now have 3 ssh session open now) We will start with the controller to setup neutron node then add compute neutron components
+Finally configure the Neutron network node
+
+[TIP] When using the -<guid>.rhpds` lab - to get your enviornment information exec a bash shell on the controller node the hostname names of your neutron server will be printed to the standard out.
+
+=== Configure controller node for neutron
+
+[NOTE]
+The ML2 plug-in uses the Open vSwitch (OVS) as a backend 
+*Note that the controller node does not need the OVS agent or service because we have a dedicated network node*
+
+
+==== Install neutron,ML2-plugin and neutron Client
+The OpenStack Networking service requires the following packages: 
+`openstack-neutron` Provides the networking service and associated configuration files. 
+`openstack-neutron-ml2` Provides a networking plug-in for icehouse release (ml2)
+
+TIP: In our training we are going to use the ml2 plugin and use OVS in the backend 
+
+`[On Controller]`
+....
+yum -y install  openstack-neutron openstack-neutron-ml2 python-neutronclient
+....
+
+==== Firewall configuration for neutron
+Systems attempting to use the functionality provided by the networking service access it over the network using port 9696. 
+
+To allow this the firewall on the service node must be altered to allow network traffic on this port. All steps in this procedure must be run while logged in as the root user. 
+
+`[On Controller/Compute/Network]`
+....
+lokkit --port 9696:tcp
+....
+
+The iptables firewall is now configured to allow incoming connections to the networking service on port 9696. 
+
+==== Setup the database for neutron
+
+The database connection string used by the networking service is defined in the `/etc/neutron/neutron.conf` file. It must be updated to point to a valid database server before starting the service. 
+
+
+`[On Controller]`
+....
+openstack-config --set /etc/neutron/neutron.conf database connection mysql://neutron:redhat@${OSPCTRL}/neutron
+....
+
+==== Create neutron database
+
+NOTE: Create Neutron Database and setup Keystone auth endpoints
+
+TIP: Use the script provide to create the database db root password is `redhat`
+
+*Example SQL*
+# mysql -u root -p
+
+CREATE DATABASE neutron;
+GRANT ALL ON neutron.* TO 'neutron'@'YOUR_FULL_HOSTNAME' IDENTIFIED BY 'redhat';
+GRANT ALL ON neutron.* TO 'neutron'@'%' IDENTIFIED BY 'redhat';
+GRANT ALL ON neutron.* TO 'neutron'@'localhost' IDENTIFIED BY 'redhat';
+FLUSH PRIVILEGES;`
+quit
+
+use `osp_sql_create` script to ensure proper DB creation. This script will create a service.sql file
+
+`[On Controller]`
+....
+/root/osp_sql_create neutron neutron
+....
+
+Then execute the following command to create the database.
+
+`[On Controller]`
+....
+mysql -u root -p < /root/neutron.sql
+....
+
+TIP: Run the following command to inject SQL to database
+`mysql -u root -p < /root/neutron.sql`
+
+==== Configure neutron to use Qpid (On Controller)
+
+Configure the OpenStack Networking service to use the QPID Message broker
+
+. Use the openstack-config utility to set the value of the rpc_backend configuration key to Qpid. 
+.  Use the openstack-config utility to set the value of the qpid_hostname configuration key to the host name of the Qpid server.  In our case the Controller.
+
+`[On Controller]`
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT rpc_backend neutron.openstack.common.rpc.impl_qpid
+openstack-config --set /etc/neutron/neutron.conf DEFAULT qpid_hostname ${OSPCTRL}
+....
+
+The OpenStack Networking service has been configured to use the message broker and any authentication schemes that it presents. 
+
+==== Configure neutron to use keystone authentication (On Controller)
+
+. Set the authentication strategy (auth_strategy) configuration key to keystone using the openstack-config command. 
+. Set the authentication host (auth_host) configuration key to the IP address or host name of the identity server.  .
+. Set the authentication port (auth_port), protocol (auth_protocol) configuration key to the port for HTTP and HTTP, respectively. 
+. Set the administration tenant name (admin_tenant_name) configuration key to the name of the tenant that was created for the use of the Network service.
+. Set the administration user name (admin_user) configuration key to the name of the user that was created for the use of the Network service. In this guide, examples use neutron. 
+. Set the administration password (admin_password) configuration key to the password that is associated with the user specified in the previous step.
+
+
+`[On Controller]`
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT auth_strategy keystone
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_protocol http
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_port 35357
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken admin_user neutron
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken admin_password redhat
+....
+
+==== Configure neutron to notification 
+We need to notify compute nodes of network changes(port status/network topology/etc/) in this step we wiil setup network change nofication 
+`[On Controller]`
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT notify_nova_on_port_status_changes True
+openstack-config --set /etc/neutron/neutron.conf DEFAULT notify_nova_on_port_data_changes True
+openstack-config --set /etc/neutron/neutron.conf DEFAULT nova_url http://${OSPCTRL}:8774/v2
+openstack-config --set /etc/neutron/neutron.conf DEFAULT nova_admin_username nova
+openstack-config --set /etc/neutron/neutron.conf DEFAULT nova_admin_tenant_id $(keystone tenant-list | awk '/ service / { print $2 }')
+openstack-config --set /etc/neutron/neutron.conf DEFAULT nova_admin_password redhat
+openstack-config --set /etc/neutron/neutron.conf DEFAULT nova_admin_auth_url http://${OSPCTRL}:35357/v2.0
+....
+
+==== Configure Networking to use the Modular Layer 2 (ML2) plug-in
+In out lab we are going to use the ML2 or Modular Layer 2 plugin. This plugin offer the most abstraction of network backends. 
+
+`[On Controller]`
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT service_plugins router
+....
+
+.#Comment out any lines in the [service_providers] section.
+
+[TIP]
+Change From: service_provider=VPN:openswan:neutron.services.vpn.service_drivers.ipsec.IPsecVPNDriver:default
+Change to: `#` service_provider=VPN:openswan:neutron.services.vpn.service_drivers.ipsec.IPsecVPNDriver:default
+
+`[On Controller]`
+....
+sed -i 's,^service_provider=VPN,#service_provider=VPN,g' /etc/neutron/neutron.conf
+....
+
+
+==== Configure the modular layer 2 (ML2) plug-in
+Configure the ml2 plugin to use gre networks and openvswitch as the backend.
+
+
+`[On Controller]`
+....
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 type_drivers gre
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 tenant_network_types gre
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 mechanism_drivers openvswitch
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2_type_gre tunnel_id_ranges 1:1000
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini securitygroup firewall_driver neutron.agent.linux.iptables_firewall.OVSHybridIptablesFirewallDriver
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini securitygroup enable_security_group True
+....
+
+==== Configure nova to use neutron networking
+
+NOTE: We need to set the filewall plugin to `firewall_driver nova.virt.firewall.NoopFirewallDriver` 
+
+`[On Controller]`
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT network_api_class nova.network.neutronv2.api.API
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_url http://${OSPCTRL}:9696
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_auth_strategy keystone
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_admin_tenant_name service
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_admin_username neutron
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_admin_password redhat
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_admin_auth_url http://${OSPCTRL}:35357/v2.0
+openstack-config --set /etc/nova/nova.conf DEFAULT linuxnet_interface_driver nova.network.linux_net.LinuxOVSInterfaceDriver
+openstack-config --set /etc/nova/nova.conf DEFAULT firewall_driver nova.virt.firewall.NoopFirewallDriver
+openstack-config --set /etc/nova/nova.conf DEFAULT security_group_api neutron
+....
+
+==== Set state path
+Set the sate path variable for neutron. This variable will be reference multiple time int the neutron config
+
+`[On Controller]`
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT state_path /var/lib/neutron
+....
+
+==== Set the core neuton plugin on controller
+Configure the Neutron Core plug to be ML2
+`[On Controller]`
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT core_plugin ml2
+....
+
+==== Set the ml2 plugin to be the core plugin on Controller
+Use symlink to tie /etc/neutron/plugin.ini to the ml2 plugini init file
+
+`[On Controller]`
+....
+ln -s plugins/ml2/ml2_conf.ini /etc/neutron/plugin.ini 
+....
+
+==== Source your admin credintials
+....
+ source keystone_admin.rc 
+....
+
+==== Create the neutron user
+`[On Controller]`
+....
+keystone user-create --name neutron --pass redhat
+....
+
+.Command Sample Output:
+----
++----------+----------------------------------+
+| Property |              Value               |
++----------+----------------------------------+
+|  email   |                                  |
+| enabled  |               True               |
+|    id    | 491ee62819f1406bad8c9c4968755234 |
+|   name   |             neutron              |
+| username |             neutron              |
++----------+----------------------------------+
+----
+
+==== Register the networking service
+`[On Controller]`
+....
+keystone service-create --name neutron --type network --description "OpenStack Neutron Networking"
+....
+
+.Sample Output:
+----
++-------------+----------------------------------+
+|   Property  |              Value               |
++-------------+----------------------------------+
+| description |   OpenStack Neutron Networking   |
+|   enabled   |               True               |
+|      id     | 028496eb4d6f405cb41d2b4368cba4b4 |
+|     name    |             neutron              |
+|     type    |             network              |
++-------------+----------------------------------+
+----
+
+==== Link neutron user to service tenant and admin roles:
+`[On Controller]`
+....
+keystone user-role-add --user neutron --tenant service --role admin
+....
+
+
+==== Create Networking Service Endpoint
+`[On Controller]`
+....
+keystone endpoint-create \
+  --service-id $(keystone service-list | awk '/ network / {print $2}') \
+  --publicurl http://${OSPCTRL}:9696 \
+  --adminurl http://${OSPCTRL}:9696 \
+  --internalurl http://${OSPCTRL}:9696
+....
+
+.Sample Output:
+----
++-------------+----------------------------------+
+|   Property  |              Value               |
++-------------+----------------------------------+
+|   adminurl  |     http://192.168.0.31:9696     |
+|      id     | dcf9b346af0049c99b1cdbd7762069d2 |
+| internalurl |     http://192.168.0.31:9696     |
+|  publicurl  |     http://192.168.0.31:9696     |
+|    region   |            regionOne             |
+|  service_id | 028496eb4d6f405cb41d2b4368cba4b4 |
++-------------+----------------------------------+
+----
+
+==== Configure metadata proxy the controller node
+
+`[On Controller]` 
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT \
+service_neutron_metadata_proxy true
+openstack-config --set /etc/nova/nova.conf DEFAULT \
+neutron_metadata_proxy_shared_secret redhat
+....
+
+==== Restart nova API,scheduler and conductor
+Restart Nova server to pull in changes we made. Start neutron server and use chkconfig to enable it to start on boot
+`[On Controller]`
+....
+service openstack-nova-api restart
+service openstack-nova-scheduler restart
+service openstack-nova-conductor restart
+service neutron-server start
+chkconfig neutron-server on
+....
+
+The neutron server is configured and running. This conclude the basic controller portion of the Neutron service 
+
+<<<<
+
+=== Configure Networking Node
+
+WARNING: Logon to the Networking Node
+
+==== Firewall configuration for neutron
+Configure firewall to allow incoming request on  port 9696
+`[On Network Node]`
+....
+lokkit --port 9696:tcp
+....
+
+==== Enable IP forwarding
+Edit sysctl.conf and set net.ipv4.ip_forward=1 the make changes persistent with sysctl -e -p:w
+
+
+`[On Network Node]`
+....
+vi /etc/sysctl.conf  #Set the following values:*
+
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.rp_filter=0
+net.ipv4.conf.default.rp_filter=0
+....
+
+==== Presist and Apply /etc/sysctl changes
+`[On Network Node]`
+....
+sysctl -e -p
+....
+
+.Sample Output:
+----
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
+net.ipv4.conf.default.accept_source_route = 0
+----
+
+==== Install neutron packages (Network Node)
+The build a dedicated networking node we need to install the neutron packages and with ml2 and openvswitch. The packages that will be installed are:
+
+`openstack-neutron` - Provides OpenStack Networking Service
+`openstack-neutron-ml2` - Provides Neutron ML2 plugin
+`openstack-neutron-openvswitch` - Provides Neutron openvswitch plugin
+
+`[On Network Node]`
+....
+yum -y install openstack-neutron openstack-neutron-ml2 openstack-neutron-openvswitch
+....
+
+==== Configure /etc/neutron/neutron.conf on Network Node
+. Set the authentication strategy (auth_strategy) configuration key to keystone using the openstack-config command.
+. Set the authentication host (auth_host) configuration key to the IP address or host name of the identity server. .
+. Set the authentication port (auth_port), protocol (auth_protocol) configuration key to the port for HTTP and HTTP, respectively.
+. Set the administration tenant name (admin_tenant_name) configuration key to the name of the tenant that was created for the use of the Network service.
+. Set the administration user name (admin_user) configuration key to the name of the user that was created for the use of the Network service. In this guide, examples use neutron.
+. Set the administration password (admin_password) configuration key to the password that is associated with the user specified in the previous step.
+
+`[On Network Node]`
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT  auth_strategy keystone
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_protocol http
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_port 35357
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken admin_user neutron
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken admin_password redhat
+....
+
+==== Configure neutron to use Qpid (On Network Node)
+Configure OpenStack Networking Node to use QPID messaging 
+ 
+`[On Network Node]`
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT rpc_backend neutron.openstack.common.rpc.impl_qpid
+openstack-config --set /etc/neutron/neutron.conf DEFAULT qpid_hostname ${OSPCTRL}
+....
+
+==== Configure neutron node core to use ml2 plug-in
+Set the `core_plugin` to Modular layer 2 plugin  and set the service plugin to be `router`
+
+`[On Network Node]`
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT core_plugin ml2
+openstack-config --set /etc/neutron/neutron.conf DEFAULT service_plugins router
+....
+
+==== Configure the Layer-3 (L3) agent
+
+The Layer-3 (L3) agent provides routing services for instance virtual networks. Configure the Layer-3 agent to use namespaces
+
+Turn on debug: *OPTIONAL*
+`[On Network Node]`
+....
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT verbose True
+....
+
+CAUTION: Make you kernel support namespaces. On some legacy releases you will need to update to kernel to support namespaces
+
+`[On Network Node]`
+....
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT interface_driver neutron.agent.linux.interface.OVSInterfaceDriver
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT use_namespaces True
+....
+
+==== Configure DHCP Agent
+Configure the DHCP Agent on the network node set interface driver to OVSInterfaceDriver. Dhcp agent will use dnsmasq as its dhcp_driver
+
+
+Turn on debug: *OPTIONAL*
+`[On Network Node]`
+....
+openstack-config --set /etc/neutron/dhcp_agent.ini DEFAULT verbose True
+....
+
+`[On Network Node]`
+....
+openstack-config --set /etc/neutron/dhcp_agent.ini DEFAULT interface_driver neutron.agent.linux.interface.OVSInterfaceDriver
+openstack-config --set /etc/neutron/dhcp_agent.ini DEFAULT dhcp_driver neutron.agent.linux.dhcp.Dnsmasq
+openstack-config --set /etc/neutron/dhcp_agent.ini DEFAULT use_namespaces True
+....
+
+==== Set external bridge 
+`[On Network Node]`
+....
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT external_network_bridge br-ex
+....
+
+==== Configure the metadata agent
+
+NOTE: The metadata agent provides configuration information such as credentials for remote access to instances
+
+`[On Network Node]`
+....
+openstack-config --set /etc/neutron/metadata_agent.ini DEFAULT auth_url http://${OSPCTRL}:5000/v2.0
+openstack-config --set /etc/neutron/metadata_agent.ini DEFAULT auth_region regionOne
+openstack-config --set /etc/neutron/metadata_agent.ini DEFAULT admin_tenant_name service
+openstack-config --set /etc/neutron/metadata_agent.ini DEFAULT admin_user neutron
+openstack-config --set /etc/neutron/metadata_agent.ini DEFAULT admin_password redhat
+openstack-config --set /etc/neutron/metadata_agent.ini DEFAULT nova_metadata_ip ${OSPCTRL}
+openstack-config --set /etc/neutron/metadata_agent.ini DEFAULT metadata_proxy_shared_secret redhat
+....
+
+
+Your lab has ovs network bridges pre configured. Set the OSP_INT to br-ex. 
+The following script will extract the IP from br-ex and set the value of OSP_IP. We will use this variable as input later in this guide
+
+`[On Network Node]`
+....
+
+export OSP_INT=br-int
+export OSP_IP=`ifconfig ${OSP_INT} | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}'`
+....
+
+*Validate that OSP_IP is set correctly*
+
+`[On Network Node]`
+....
+echo "Openstack tunnel Interface is = ${OSP_INT} -> ${OSP_IP}"
+....
+
+==== Configure the (ML2) plug-in on the Networking Node
+
+Configure the Module Layer-2 plugin to use gre networks and openvswitch. 
+Assign the ovs local ip addess  
+
+`[On Network Node]`
+....
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 type_drivers gre
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 tenant_network_types gre
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 mechanism_drivers openvswitch
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2_type_gre tunnel_id_ranges 1:1000
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ovs local_ip ${OSP_IP}
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ovs tunnel_type gre
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ovs tunnel_bridge br-tun
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ovs enable_tunneling True
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini securitygroup \
+firewall_driver neutron.agent.linux.iptables_firewall.OVSHybridIptablesFirewallDriver
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini securitygroup \
+enable_security_group True
+....
+
+==== Restart the OVS service and configure it to start when the system boots:
+Reload the OVS switch and enable it for start on bootup
+`[On Network Node]`
+....
+service openvswitch restart
+chkconfig openvswitch on
+....
+
+==== Add the integration bridge:
+
+TIP: Depending on your environment ovs maybe pre-configured you can inspect the environment with ovs-vsctl show
+
+`[On Network Node]`
+....
+ovs-vsctl add-br br-int
+....
+==== Add the external bridge:
+`[On Network Node]`
+....
+ovs-vsctl add-br br-ex
+....
+
+==== Add port to br-ex that connects to the physical external network interface
+`[On Network Node]`
+....
+ovs-vsctl add-port br-ex eth0
+....
+
+TIP: `ovs-vsctl show` will display your ovs configuration
+
+==== Set ML2 Plugin
+Use symlink to tie ml2 plugin init scripts to neutron plugin.ini
+
+`[On Network Node]`
+....
+ln -s plugins/ml2/ml2_conf.ini /etc/neutron/plugin.ini
+....
+
+==== Link ml2_config to /etc/neutron/plugin.ini
+Point /etc/init.d/neutron-openvswitch-agent to /etc/neutron/plugin.ini
+
+`[On Network Node]`
+....
+cp /etc/init.d/neutron-openvswitch-agent /etc/init.d/neutron-openvswitch-agent.orig
+sed -i 's,plugins/openvswitch/ovs_neutron_plugin.ini,plugin.ini,g' /etc/init.d/neutron-openvswitch-agent
+....
+
+==== Comment out the VPN service
+`[On Network Node]`
+....
+sed -i 's,^service_provider=VPN,#service_provider=VPN,g' /etc/neutron/neutron.conf
+....
+
+TIP: You can see the chagnes made by  diff /etc/init.d/neutron-openvswitch-agent /etc/init.d/neutron-openvswitch-agent.orig
+
+
+==== Set DHCP Domain 
+`[On Neutron Node]`
+....
+openstack-config --set /etc/neutron/dhcp_agent.ini DEFAULT dhcp_domain rhpds.opentlc.com
+....
+
+==== Allow DHCP incoming
+....
+
+lokkit --port 67:udp
+lokkit --port 68:udp
+....
+
+==== Start Neutron OpenVswitch,L3 Agent, DHCP Agent and Meta Data Agent on bootup
+Start neutron services (dhcp/l3 agent) metadata server. Use chkconfig to enable on bootup
+
+`[On Network Node]`
+....
+service neutron-l3-agent start
+service neutron-dhcp-agent start
+service neutron-metadata-agent start
+service neutron-openvswitch-agent start
+
+chkconfig neutron-l3-agent on
+chkconfig neutron-dhcp-agent on
+chkconfig neutron-metadata-agent on
+chkconfig neutron-openvswitch-agent on
+....
+
+
+=== Configure Networking on the Compute node
+
+WARNING: Logon to Networking Compute Node
+
+Edit sysctl.conf and set net.ipv4.conf.all.rp_filter and net.ipv4.conf.default.rp_filter to 0
+
+`[On Compute Node]` 
+....
+vi  /etc/sysctl.conf # Set the following values:
+
+net.ipv4.conf.all.rp_filter=0
+net.ipv4.conf.default.rp_filter=0
+....
+
+==== Presist and Apply /etc/sysctl changes
+`[On Compute Node]`
+....
+sysctl -e -p
+....
+
+.Sample Output:
+----
+net.ipv4.ip_forward = 0
+net.ipv4.conf.default.rp_filter = 0
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.accept_source_route = 0
+----
+
+==== Install ML2 and OpenVswitch on Compute Node
+
+The OpenStack Networking service requires the following packages:
+`openstack-neutron` - Provides the networking service and associated configuration files.
+`openstack-neutron-ml2` - Provides a networking plug-in for icehouse release (ml2)
+
+`[On Compute Node]`
+....
+yum -y install openstack-neutron-ml2 openstack-neutron-openvswitch
+....
+
+==== Configure neutron to use keystone for authentication
+. Set the authentication strategy (auth_strategy) configuration key to keystone using the openstack-config command.
+. Set the authentication host (auth_host) configuration key to the IP address or host name of the identity server. .
+. Set the authentication port (auth_port), protocol (auth_protocol) configuration key to the port for HTTP and HTTP, respectively.
+. Set the administration tenant name (admin_tenant_name) configuration key to the name of the tenant that was created for the use of the Network service.
+. Set the administration user name (admin_user) configuration key to the name of the user that was created for the use of the Network service. In this guide, examples use neutron.
+. Set the administration password (admin_password) configuration key to the password that is associated with the user specified in the previous step.
+
+`[On Compute Node]`
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT auth_strategy keystone
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_protocol http
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_port 35357
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken admin_user neutron
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken admin_password redhat
+....
+
+==== Configure neutron to use Qpid  (On Compute Node)
+
+`[On Compute Node`]
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT rpc_backend neutron.openstack.common.rpc.impl_qpid
+openstack-config --set /etc/neutron/neutron.conf DEFAULT qpid_hostname ${OSPCTRL}
+....
+
+==== Configure Networking to use (ML2) plug-in on Compute
+`[On Compute Node`]
+....
+openstack-config --set /etc/neutron/neutron.conf DEFAULT core_plugin ml2
+openstack-config --set /etc/neutron/neutron.conf DEFAULT service_plugins router
+....
+
+==== Setup interfaces for use with ML2
+`[On Compute Node]`
+....
+export OSP_INT=br-int
+export OSP_IP=`ifconfig ${OSP_INT} | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}'`
+....
+
+`[On Compute Node]`
+....
+#Validate that OSP_IP is set correctly
+echo "Compute tunnel interface is = ${OSP_INT} -> ${OSP_IP}"
+....
+
+==== Configure the Modular Layer 2 (ML2) plug-in
+
+`[On Compute Node]`
+....
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2  type_drivers gre
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 tenant_network_types gre
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 mechanism_drivers openvswitch
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2_type_gre tunnel_id_ranges 1:1000
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ovs local_ip ${OSP_IP}
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ovs  tunnel_type gre
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ovs tunnel_bridge br-tun
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ovs enable_tunneling True
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini securitygroup firewall_driver neutron.agent.linux.iptables_firewall.OVSHybridIptablesFirewallDriver
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini securitygroup enable_security_group True
+....
+
+==== Set permissions of signing dir
+`[On Compute Node]`
+....
+chown -R neutron:neutron /var/lib/neutron/
+....
+
+==== Start Neutron OpenVswitch and enable on Boot
+`[On Compute Node]`
+....
+service openvswitch restart
+chkconfig openvswitch on
+....
+
+
+==== Add the integration bridge on Compute Node
+NOTE: OVS Components are pre-configured in the training environment
+
+`[On Compute Node]`
+
+....
+ovs-vsctl add-br br-int
+....
+
+==== To configure Compute to use Neutron Networking
+. Set the authentication strategy (auth_strategy) configuration key to keystone using the openstack-config command.
+.  Set the authentication host (auth_host) configuration key to the IP address or host name of the identity server. .
+. Set the authentication port (auth_port), protocol (auth_protocol) configuration key to the port for HTTP and HTTP, respectively.
+. Set the administration tenant name (admin_tenant_name) configuration key to the name of the tenant that was created for the use of the Network service.
+. Set the administration user name (admin_user) configuration key to the name of the user that was created for the use of the Network service. In this guide, examples use neutron.
+. Set the administration password (admin_password) configuration key to the password that is associated with the user specified in the previous step.
+
+`[On Compute Node]`
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT network_api_class nova.network.neutronv2.api.API
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_url http://${OSPCTRL}:9696
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_auth_strategy keystone
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_admin_tenant_name service
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_admin_username neutron
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_admin_password redhat
+openstack-config --set /etc/nova/nova.conf DEFAULT neutron_admin_auth_url http://${OSPCTRL}:35357/v2.0
+openstack-config --set /etc/nova/nova.conf DEFAULT linuxnet_interface_driver nova.network.linux_net.LinuxOVSInterfaceDriver
+openstack-config --set /etc/nova/nova.conf DEFAULT firewall_driver nova.virt.firewall.NoopFirewallDriver
+openstack-config --set /etc/nova/nova.conf DEFAULT security_group_api neutron
+....
+
+==== Set ML2 Plugin on Compute
+`[On Compute Node]`
+
+....
+ ln -s plugins/ml2/ml2_conf.ini /etc/neutron/plugin.ini
+....
+
+==== Link ml2_config to /etc/neutron/plugin.ini
+`[On Compute Node]`
+....
+cp /etc/init.d/neutron-openvswitch-agent /etc/init.d/neutron-openvswitch-agent.orig
+sed -i 's,plugins/openvswitch/ovs_neutron_plugin.ini,plugin.ini,g' /etc/init.d/neutron-openvswitch-agent
+....
+
+==== Comment out the VPN service
+`[On Compute Node]`
+....
+sed -i 's,^service_provider=VPN,#service_provider=VPN,g' /etc/neutron/neutron.conf
+....
+
+==== Restart the compute server
+`[On Compute Node]`
+....
+service openstack-nova-compute restart
+....
+
+==== Start the OVS Agent and enable of boot
+
+`[On Compute Node]`
+....
+service neutron-openvswitch-agent start
+chkconfig neutron-openvswitch-agent on
+....
+
+<<<<
+
+=== Neutron Creating SDN Networks
+
+In the Neutron lab students are give the choice to create a simple network environment that consists of a simple network build or a advanced network buildout
+
+Simple network build out consists of a basic SDN buildout: 
+external network used for allocation floating ip address 
+internal private network 
+for the purpose of completing this lab simple networking will suffice
+
+If you would like to build out a more sophisticated network you may choose the advanced neutron section
+
+*Please choose a option:*
+*Simple:* Creating Software Defined Network (Basic)
+or
+*Advanced:* Creating Software Defined Network (Advanced)
+
+TIP: Advanced section is *Optional* you may choose to go back a do the advanced Network build out at the completing of the course
+
+==== Create and External Network 
+
+`[On Controller]`
+....
+neutron net-create external --shared --router:external=True
+....
+
+.Sample Output:*
+----
++---------------------------+--------------------------------------+
+| Field                     | Value                                |
++---------------------------+--------------------------------------+
+| admin_state_up            | True                                 |
+| id                        | 7f6143fc-251e-4fd5-a111-fb5ea51b5919 |
+| name                      | external                              |
+| provider:network_type     | gre                                  |
+| provider:physical_network |                                      |
+| provider:segmentation_id  | 1                                    |
+| router:external           | True                                 |
+| shared                    | True                                 |
+| status                    | ACTIVE                               |
+| subnets                   |                                      |
+| tenant_id                 | b885d22ae8e94f6a902bc479219bc998     |
++---------------------------+--------------------------------------+
+----
+
+==== Create a subnet on the external network
+. Define the subnet of the internal network as an isolated subnet away from all other systems, other than for your specific Controller and Compute nodes.  You will use the last IPv4 octet of your Controller (e.g. X+40) as the 3rd octet of this dedicated, internal network.
+As with the ext network, to make future reference of the subnet of the int network easier by name, instead of by ID, use the --name option, such as appending `subnet` to the name for the network `int`,
+Also as with the ext network, the keyword --dns-nameserver may be specified multiple times to include additional DNS servers.
+Depending on the network attached to your internal interface eth1, you may need to disable DHCP for the int subnet, just like the ext subnet by adding `--disable-dhcp`.
+
+[TIP]
+You external floating ip allocation pool is determined my the following scheme
+192.168.0.120+(X*6),end=192.168.0.132+(X*6)
+
+NOTE: Example below is for Student 1 (replace 126 and 132 with your assigned range)
+`[On Controller]`
+
+.Example for Student 1
+****
+....
+neutron subnet-create external --name ext-subnet --disable-dhcp --allocation-pool start=192.168.0.126,end=192.168.0.132 --gateway 192.168.0.2 192.168.0.0/16 --dns-nameservers list=true 8.8.8.8 4.2.2.2
+....
+****
+
+....
+#neutron subnet-create external --name ext-subnet   --allocation-pool start=192.168.0.120+(X*6),end=192.168.0.132+(X*4)  --gateway 192.168.0.2 192.168.0.0/16 --dns-nameservers list=true 8.8.8.8 4.2.2.2
+....
+
+TIP: X is you workstation ID or Student ID
+
+.Sample Output for Student 1:
+----
++------------------+----------------------------------------------------+
+| Field            | Value                                              |
++------------------+----------------------------------------------------+
+| allocation_pools | {"start": "192.168.0.126", "end": "192.168.0.132"} |
+| cidr             | 192.168.0.0/16                                     |
+| dns_nameservers  | 8.8.8.8                                            |
+| enable_dhcp      | False                                              |
+| gateway_ip       | 192.168.0.2                                        |
+| host_routes      |                                                    |
+| id               | c95d317e-52d0-4d7b-a111-793f0bf98397               |
+| ip_version       | 4                                                  |
+| name             | ext-subnet                                         |
+| network_id       | 75db138a-6765-44ab-bd61-8543688ea40f               |
+| tenant_id        | cb29917032744e47926ec66cc4746e61                   |
++------------------+----------------------------------------------------+
+----
+
+==== Create a intranet network 
+
+`[On Controller]`
+....
+neutron net-create intranet --shared
+....
+
+.Sample Output:
+----
+Created a new network:
++---------------------------+--------------------------------------+
+| Field                     | Value                                |
++---------------------------+--------------------------------------+
+| admin_state_up            | True                                 |
+| id                        | 025f392e-c8e6-472f-94db-f29820e9ff8a |
+| name                      | intranet                             |
+| provider:network_type     | gre                                  |
+| provider:physical_network |                                      |
+| provider:segmentation_id  | 2                                    |
+| status                    | ACTIVE                               |
+| subnets                   |                                      |
+| tenant_id                 | b885d22ae8e94f6a902bc479219bc998     |
++---------------------------+--------------------------------------+
+----
+
+==== Create a subnet to localize intranet traffic
+
+`[On Controller]`
+....
+neutron subnet-create intranet --name intranet-subnet  9.0.0.0/24  --dns-nameservers list=true 8.8.8.8 4.2.2.2
+....
+
+.Sample Output:
+----
+Created a new subnet:
++------------------+------------------------------------------+
+| Field            | Value                                    |
++------------------+------------------------------------------+
+| allocation_pools | {"start": "9.0.0.2", "end": "9.0.0.254"} |
+| cidr             | 9.0.0.0/24                               |
+| dns_nameservers  |                                          |
+| enable_dhcp      | True                                     |
+| gateway_ip       | 9.0.0.1                                  |
+| host_routes      |                                          |
+| id               | 1e337300-6eb6-48e3-af63-82736587d127     |
+| ip_version       | 4                                        |
+| name             | intranet-subnet                          |
+| network_id       | a3c35547-c5d9-462b-80bb-f9280e8a8a2e     |
+| tenant_id        | cb29917032744e47926ec66cc4746e61         |
++------------------+------------------------------------------+
+----
+
+==== Create a router
+`[On Controller]`
+....
+neutron router-create router
+....
+
+.Sample Output:*
+----
+Created a new router:
++-----------------------+--------------------------------------+
+| Field                 | Value                                |
++-----------------------+--------------------------------------+
+| admin_state_up        | True                                 |
+| external_gateway_info |                                      |
+| id                    | 81e562ff-87a8-44e9-9438-ce59e2a2ae63 |
+| name                  | router                               |
+| status                | ACTIVE                               |
+| tenant_id             | b885d22ae8e94f6a902bc479219bc998     |
++-----------------------+--------------------------------------+
+----
+
+==== Attach the router to the intranet subnet
+`[On Controller]`
+....
+neutron router-interface-add router intranet-subnet
+....
+
+.Sample Output:
+----
+Added interface e3c707d7-911c-46d6-9a99-9594a3ca4e15 to router intranet router.
+
+----
+
+==== Attach the router to the external network to define a outbound gateway
+
+`[On Controller]`
+....
+neutron router-gateway-set router external
+....
+
+.Sample Output:
+----
+Set gateway for router external
+----
+
+==== Update Security Groups Neutron
+
+Use `neutron security-group-list` to list default security group. In the next step we will allow inbound icmp and ssh traffic so we can connect to our instance
+
+`[On Controller]`
+....
+neutron security-group-creaate openlab 
+....
+
+
+
+`[On Controller]`
+....
+neutron security-group-list 
+....
+
+.Sample Output
+----
++--------------------------------------+---------+--------------+
+| id                                   | name     | description |
++--------------------------------------+---------+---------0----+
+| 52573b3c-e851-424e-9add-2370e3eb7b5a | default  | default     |
++--------------------------------------+---------+--------------+
+| 52573b3c-e851-424e-9add-2370e3eef21a | openlab  |             |
++--------------------------------------+---------+--------------+
+----
+
+`[On Controller]`
+....
+neutron security-group-rule-create --protocol icmp --direction ingress openlab
+neutron security-group-rule-create --protocol tcp --port-range-min 22 --port-range-max 22 openlab
+....
+
+==== Verify connectivity 
+Get the gateway address for the external network
+`[On Controller]`
+....
+neutron port-list -F fixed_ips |grep 192
+....
+
+.Sample Output:
+-----
+| {"subnet_id": "61154e02-e78e-49b3-810b-7f7f632500de", "ip_address": "192.168.0.126"} |
+-----
+TIP:  This address is you external *gateway* address we will use ping to test this address can be reached.
+
+==== Verify External Gateway
+Verify that the gateway is pingable
+
+`[On Controller]`
+....
+ping -c 2  192.168.0.X
+....
+TIP: Ping the ips display from the previous command
+
+.Sample Output:
+----
+ping -c 2  192.168.0.126
+64 bytes from 192.168.0.126: icmp_seq=1 ttl=64 time=3.42 ms
+64 bytes from 192.168.0.126: icmp_seq=2 ttl=64 time=0.601 ms
+----
+
+==== List Created networks
+`[On Controller]`
+....
+neutron net-list -F subnets
+....
+
+.Sample Output:
+----
++-----------------------------------------------------+
+| subnets                                             |
++-----------------------------------------------------+
+| c95d317e-52d0-4d7b-a111-793f0bf98397 192.168.0.0/16 |
+| 1e337300-6eb6-48e3-af63-82736587d127 9.0.0.0/24     |
++-----------------------------------------------------+
+----
+
+CAUTION: You have now completed a Basic network build out. Please skip to the next section advanced network build out is *Optional*
+
+

@@ -1,0 +1,291 @@
+=== Block Storage Service
+
+The Block Storage service in OpenStack is known as `Cinder` provides an infrastructure for managing volumes in OpenStack.  It's designed connect LVM/SAN/NFS storage resources to end users that can be consumed by the OpenStack Compute 
+
+Cinder's main function is to virtualize pools of block storage and provides end users with a self service API to request and consume those resources without requiring any knowledge of how to manage the back-end storage device.
+
+TIP: Cinder Support Matrix contains a list of Supported drivers you can see the full list here: https://wiki.openstack.org/wiki/CinderSupportMatrix
+
+
+=== Prepare cinder-volumes
+
+`[On Controller]`
+....
+pvcreate /dev/vdb
+vgextend cinder-volumes /dev/vdb
+....
+
+NOTE: In this lab cinder-volumes is already exists if there is no cinder-volume VG you can create it by doing `vgcreate  cinder-volumes /dev/vdb`
+
+=== Install the Cinder Packages
+TIP: In this lab we will be using lvm 
+
+The OpenStack Image service requires the following packages: 
+`openstack-cinder` - Provides the OpenStack Block Storage service. 
+`scsi-target-utils` - For being able to provide the iSCSI target service.
+
+Install the packages for the Block Storage service:
+
+`[On Controller]`
+....
+yum install -y openstack-cinder scsi-target-utils
+....
+
+
+=== Firewall configuration for cinder
+Systems attempting to use the functionality provided by the Block Storage services access it over the network using ports 3260 and 8776. 
+To allow this the firewall on the system hosting the Block Storage service must be altered to allow network traffic on these ports. All steps in this procedure must be run logged in as the root user. 
+
+`[On Controller]`
+....
+lokkit --port 3260:tcp
+lokkit --port 8776:tcp
+....
+
+The iptables firewall is now configured to allow incoming connections to the Block Storage service on ports 3260 and 8776. 
+
+
+=== Configure cinder to use keystone for authentication
+The Block Storage service must be explicitly configured to use the identity service for authentication. Follow the steps listed in this procedure to configure this. 
+
+
+TIP: All steps listed in this procedure need to be performed on your Controller as the root user. 
+
+
+. Set the authentication strategy (auth_strategy) configuration key to keystone using the openstack-config command.
+
+. Set the administration tenant name (admin_tenant_name) configuration key to the name of the tenant that was created for the use of the Block Storage service. In this guide, examples use services. 
+
+. Set the administration user name (admin_user) configuration key to the name of the user that was created for the use of the block storage service. In this guide, examples use cinder. 
+
+. Set the administration password (admin_password) configuration key to the password that is associated with the user specified in the previous step. 
+
+`[On Controller]`
+....
+openstack-config --set /etc/cinder/cinder.conf DEFAULT auth_strategy keystone
+openstack-config --set /etc/cinder/cinder.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000
+openstack-config --set /etc/cinder/cinder.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/cinder/cinder.conf keystone_authtoken auth_protocol http
+openstack-config --set /etc/cinder/cinder.conf keystone_authtoken auth_port 35357
+openstack-config --set /etc/cinder/cinder.conf keystone_authtoken admin_user cinder
+openstack-config --set /etc/cinder/cinder.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/cinder/cinder.conf keystone_authtoken admin_password redhat
+....
+
+The authentication keys used by the Block Storage services have been set and will be used when the services are started. 
+
+
+=== Configure the database connection string
+
+Set the mysql connection variable and password in /etc/cinder/cinder.conf 
+
+`[On Controller]`
+....
+openstack-config --set /etc/cinder/cinder.conf database connection mysql://cinder:redhat@${OSPCTRL}/cinder
+....
+
+NOTE: The database connection string used by the Block Storage services (the value of the connection configuration key) is defined in the /etc/cinder/cinder.conf file. The string must be updated to point to a valid database server before starting the service. 
+
+. Use the openstack-config utility to set the value of the rpc_backend configuration key to Qpid. 
+
+. Use the openstack-config utility to set the value of the qpid_hostname configuration key to the host name of the Qpid server. 
+
+=== Configure cinder to use Qpid
+The Block Storage services must be explicitly configured with the type, location, and authentication details of the message broker. 
+
+`[On Controller]`
+....
+openstack-config --set /etc/cinder/cinder.conf DEFAULT rpc_backend cinder.openstack.common.rpc.impl_qpid
+openstack-config --set /etc/cinder/cinder.conf DEFAULT qpid_hostname ${OSPCTRL}
+....
+
+CAUTION: As for the fact we did not configure Qpid to authenticate any incoming connections we do not need to provide the details of a valid Qpid user in the Block Storage configuration. In a production installation it would be a good to set security on incoming Qpid connection what will probably require you to adjust the Authentication Settings. 
+
+
+=== Configure Block Storage to use the Image Service.
+
+This procedure documents the steps involved in configuring the volume service to use LVM storage. The LVM volume group “cinder-volumes” used must already exist and be accessible from the server hosting the volume service. 
+
+TIP: In this lab we will be installing all cinder services on the controller
+
+Block Storage needs access to images to create bootable volumes.
+
+`[On Controller]`
+....
+openstack-config --set /etc/cinder/cinder.conf DEFAULT glance_host ${OSPCTRL}
+....
+
+Configure the iSCSI target service to discover Block Storage volumes. Add the following line to the beginning of the /etc/tgt/targets.conf file, if it is not already present:
+
+`[On Controller]`
+....
+cp /etc/tgt/targets.conf   /etc/tgt/targets.conf.org
+echo 'include /etc/cinder/volumes/*' >/etc/tgt/targets.conf 
+echo 'default-driver iscsi' >>/etc/tgt/targets.conf 
+....
+
+NOTE: The volume storage service may make use of the SCSI target daemon, tgtd, when mounting storage for some back-ends. To support this the tgtd service must be configured to read additional configuration files. 
+
+=== Create a Cinder database
+
+NOTE: Create the Cinder Database and setup Keystone auth endpoints
+
+TIP: Use the script provide to create the database db root password is `redhat`
+
+*Example SQL*
+# mysql -u root -p
+
+CREATE DATABASE neutron;
+GRANT ALL ON neutron.* TO 'neutron'@'YOUR_FULL_HOSTNAME' IDENTIFIED BY 'redhat';
+GRANT ALL ON neutron.* TO 'neutron'@'%' IDENTIFIED BY 'redhat';
+GRANT ALL ON neutron.* TO 'neutron'@'localhost' IDENTIFIED BY 'redhat';
+FLUSH PRIVILEGES;`
+quit
+
+use `osp_sql_create` script to ensure proper DB creation. This script will create a service.sql file
+
+`[On Controller]`
+....
+/root/osp_sql_create cinder cinder
+....
+
+Then execute the following command to create the database.
+
+`[On Controller]`
+....
+mysql -u root -p < /root/cinder.sql
+....
+
+
+`[On Controller]`
+....
+su -s /bin/sh -c "cinder-manage db sync" cinder &>/var/log/cinder/cinder_sync
+....
+
+=== Create Block Storage service users
+
+TIP: Make sure you environment is sourced
+Create the cinder user, who has the admin role in the services tenant. set the password to redhat
+
+`[On Controller]`
+....
+keystone user-create --name=cinder --pass=redhat
+....
+
+.Sample Output:
+----
++----------+----------------------------------+
+| Property |              Value               |
++----------+----------------------------------+
+|  email   |                                  |
+| enabled  |               True               |
+|    id    | 62c5341d03ef43ada32aa625632afe1f |
+|   name   |              cinder              |
+| username |              cinder              |
++----------+----------------------------------+
+----
+
+Use the service tenant and give the user the admin role:
+
+`[On Controller]`
+....
+keystone user-role-add --user=cinder --tenant=service --role=admin
+....
+
+=== Register the block storage service
+
+==== Create the Cinder Service
+Create the cinder service entry and assign it an endpoint
+`[On Controller]`
+....
+keystone service-create --name=cinder --type=volume --description="OpenStack Block Storage"
+....
+
+.Sample Output:
+----
++-------------+----------------------------------+
+|   Property  |              Value               |
++-------------+----------------------------------+
+| description |     OpenStack Block Storage      |
+|   enabled   |               True               |
+|      id     | f418cced185441e0be5c5042224069cc |
+|     name    |              cinder              |
+|     type    |              volume              |
++-------------+----------------------------------+
+----
+
+==== Create the Cinder Endpoint
+....
+keystone endpoint-create \
+  --service-id=$(keystone service-list | awk '/ volume / {print $2}') \
+  --publicurl=http://${OSPCTRL}:8776/v1/%\(tenant_id\)s \
+  --internalurl=http://${OSPCTRL}:8776/v1/%\(tenant_id\)s \
+  --adminurl=http://${OSPCTRL}:8776/v1/%\(tenant_id\)s
+....
+
+=== Start and configure the Block Storage services to start when the system boots:
+
+`[On Controller]`
+....
+service openstack-cinder-volume start
+service tgtd start
+service openstack-cinder-api start
+service openstack-cinder-scheduler start
+
+chkconfig openstack-cinder-api on
+chkconfig openstack-cinder-scheduler on
+chkconfig openstack-cinder-volume on
+chkconfig tgtd on
+....
+
+=== Verify you cinder config
+
+The steps outlined in this section of the procedure must be performed on the Controller while in a authenticated OpenStack administrator shell
+
+TIP: Source your admin credentials
+Use the cinder create command to create a new volume:
+
+`[On Controller]`
+....
+cinder create --display-name cinder_v01 2
+....
+
+.Sample Output:
+----
++---------------------+--------------------------------------+
+|       Property      |                Value                 |
++---------------------+--------------------------------------+
+|     attachments     |                  []                  |
+|  availability_zone  |                 nova                 |
+|       bootable      |                false                 |
+|      created_at     |      2014-05-16T01:22:25.983953      |
+| display_description |                 None                 |
+|     display_name    |              cinder_v01              |
+|      encrypted      |                False                 |
+|          id         | 7758a684-420a-4e2c-a350-b3eb691ac9f5 |
+|       metadata      |                  {}                  |
+|         size        |                  2                   |
+|     snapshot_id     |                 None                 |
+|     source_volid    |                 None                 |
+|        status       |               creating               |
+|     volume_type     |                 None                 |
++---------------------+--------------------------------------+
+----
+
+=== List Cinder Vols
+
+`[On Controller]`
+....
+cinder list
+....
+
+.Sample Output:
+----
++--------------------------------------+-----------+--------------+------+-------------+----------+-------------+
+|                  ID                  |   Status  | Display Name | Size | Volume Type | Bootable | Attached to |
++--------------------------------------+-----------+--------------+------+-------------+----------+-------------+
+| 7758a684-420a-4e2c-a350-b3eb691ac9f5 | available |  cinder_v01  |  2   |     None    |  false   |             |
++--------------------------------------+-----------+--------------+------+-------------+----------+-------------+
+----
+
+<<<<

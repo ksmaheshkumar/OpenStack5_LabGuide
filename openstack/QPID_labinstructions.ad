@@ -1,0 +1,44 @@
+=== Message Broker
+In this section we will install the packages required by the Qpid message broker. The packages that will be installed are: 
+
+`qpid-cpp-server` Provides the Qpid message broker.
+
+`[On Controller]`
+....
+yum -y install qpid-cpp-server
+....
+
+=== Firewall configuration for QPID
+You must allow incoming connections to the messaging system. The default port for AMQP traffic is 5672
+
+`[On Controller]`
+
+....
+lokkit --port 5672:tcp
+....
+
+TIP: All steps listed in this procedure must be performed while logged as the root user. 
+
+=== Configure /etc/qpidd.conf
+CAUTION: For our training we are going to disable authentication. For production environments consider using secure authentication you can use the `qpid-cpp-server-ssl` package to enable SSL transport
+
+*Edit the /etc/qpidd.conf file and change the following value of auth:*
+Change auth=yes to auth=no* by running the below shell script or by editing the file manually
+
+`[On Controller]`
+
+....
+sed -i 's/^auth=.*$/auth=no/' /etc/qpidd.conf
+....
+
+=== Start QPID and enable service on boot
+The qpidd service must be started before the broker can commence sending and receiving messages.
+
+`[On Controller]`
+
+....
+service qpidd start
+chkconfig qpidd on
+....
+
+

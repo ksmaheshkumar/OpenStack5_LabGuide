@@ -1,0 +1,99 @@
+
+== Legal Notice
+
+*Copyright © 2014 Red Hat, Inc*
+
+The text of and illustrations in this document are licensed by Red Hat under a Creative Commons Attribution–Share Alike 3.0 Unported license ("CC-BY-SA"). An explanation of CC-BY-SA is available at http://creativecommons.org/licenses/by-sa/3.0/. In accordance with CC-BY-SA, if you distribute this document or an adaptation of it, you must provide the URL for the original version.
+Red Hat, as the licensor of this document, waives the right to enforce, and agrees not to assert, Section 4d of CC-BY-SA to the fullest extent permitted by applicable law.
+
+*Copyright © 2012, 2013 OpenStack Foundation*
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.  You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the License for the specific language governing permissions and limitations under the License.
+
+<<<<
+
+== Open Lab Training Workbook Preface
+
+This lab is written with the assumption that students have a working knowledge of the following:
+Working knowledge of Redhat Linux Enterprise Linux 6.5
+Working knowledge of Linux services: `ssh httpd iptables`
+Working knowledge of network concepts: `routers networks firewalls` 
+
+=== Tips on successfully completing the lab
+
+. READ carefully what is expected from you to do  in each and every section.
+
+. Do not assume anything and stick to the instructions.
+. Do not just copy and paste. Try to understand what we ask you to do and weather you need to adjust values.
+. Few of the sections here are more advanced and not covered with this training. They are marked *Optional*.  Ask the instructor if you are able to do these sections as sometimes the labs do not have the infrastructure available to complete them.
+.  When doing a copy and paste if the command line is separated by a line break preceded by a \, copy and paste it as you see it in this document, for example: Text in the below area are commands that you will use to build out your OpenStack environment. familiarize yourself with the document layout
+*Pay Attention to the Document call-outs these areas contain valuable information*
+
+[NOTE]
+Pay special attention to node designation when you cut and paste 
+`[Controller Node]`
+`[Compute Node]`
+`[Network Node]`
+`[Guest VM]`
+
+`[On Node]` 
+.....
+#!/bin/sh
+echo"I am a Code Block"
+
+# some really long command \
+  that runs on two line
+.....
+
+NOTE: This is an example of NOTE.
+
+TIP: This is an example of TIP.
+
+WARNING: This is an example of WARNING.
+
+CAUTION: This is a example of CAUTION.
+
+== Lab Environment Information
+
+.OSP Lab enviornment:
+ This lab environment is called -<guid>.rhpds` We will use this lab to build distributed Red Hat OpenStack Platform installation. This lab will span multiple days. We will start by installing a database and then build out a three node OpenStack enviornment `(Controller/Compute/Networking)`. 
+
+The second environment can be accessed via SSH as the root user:
+`Controller Node:` ospctrlX-<guid>.rhpds.opentlc.com
+`Compute Node:` novaX-<guid>.rhpds.opentlc.com
+`Compute Node:` neutronX-<guid>.rhpds.opentlc.com
+
+
+[TIP]
+Replace `X` with your student number provided by the instructor.
+The root password will be provided by the instructor.
+Make sure you can SSH into all 5 systems before continuing.  Inform your instructor if you cannot reach a system.
+
+=== Lab Environment Variables
+[NOTE]
+To minimize manual entry errors environmental variable are automatically set for you on boot.Thorough out the lab you will need to use these variables as part of command execution
+When you log into the systems the environment variables will be printed for for you on login
+*Check to make sure the following variables are set according to the IP scheme listed below:*
+....
+echo $OSPCTRL
+echo $NOVA
+echo $NEUTRON
+....
+
+=== Workstation IP Addressing Scheme
+In /etc/profile.d/osplabenv.sh will export these variable on boot. Make these variable are set according to the schema below.*
+
+****
+[TIP]
+*IP Address Schema:*
+The instructor will assign you a student id. This will also be used in you IP address scheme
+OSPCTRL = 192.168.0.(*$SID+20*)   example for student0  192.168.5.20 `[On Controller]` Node
+NOVA = 192.168.0.(*$SID+40*)   example for student5  192.168.5.40 #Nova Compute Node
+NETWORK = 192.168.0.(*$SID+60*)   example for student0  192.168.5.60 #Neutron Networking Node
+****
+
+NOTE: All RHPDS System will be provisioned as Station 0
+
+<<<<

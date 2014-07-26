@@ -1,0 +1,380 @@
+=== Compute Service
+
+TIP: First step to building a compute node is to setup the controller to accept compute nodes. In this lab we will start by setting up the controller then the nova node and add network to tie them together
+
+=== Configure controller node for nova
+In this chapter we will configure a dedicated Computer and add it to the controller
+
+=== Install the Compute packages necessary for the Controller Node.
+
+The steps listed in this procedure install the packages required by the OpenStack Compute Scheduler and Nova VNC services:  The packages that will be installed are:
+
+`openstack-nova-api` - Provides OpenStack Nova API services
+`openstack-nova-cert` - Provides OpenStack Nova certificate management service
+`openstack-nova-conductor` - Provides OpenStack Nova Conductor services
+`openstack-nova-console` - Provides OpenStack Nova console access services
+`openstack-nova-novncproxy` - OpenStack Nova noVNC proxy service
+`openstack-nova-scheduler` - OpenStack Nova VM distribution service
+`python-novaclient` - Python API and CLI for OpenStack Nova
+
+
+`[On Controller]`
+....
+yum install -y openstack-nova-api \
+openstack-nova-cert \
+openstack-nova-conductor \
+openstack-nova-console \
+openstack-nova-novncproxy \
+openstack-nova-scheduler \
+python-novaclient 
+....
+
+=== Firewall configuration for nova
+Controller node must be altered to allow network traffic on these ports for nova connections
+
+`[On Controller]`
+....
+lokkit --port 8773-8775:tcp
+....
+=== Configure database connection
+
+`[On Controller]`
+....
+openstack-config --set /etc/nova/nova.conf database connection mysql://nova:redhat@${OSPCTRL}/nova
+.... 
+
+=== Create a nova database
+
+TIP: We set the mysql root password to "redhat"
+
+`[On Controller]`
+*Example SQL*
+# mysql -u root -p
+
+CREATE DATABASE nova;
+GRANT ALL ON nova.* TO 'nova'@'YOUR_FULL_HOSTNAME' IDENTIFIED BY 'redhat';
+GRANT ALL ON nova.* TO 'nova'@'%' IDENTIFIED BY 'redhat';
+GRANT ALL ON nova.* TO 'nova'@'localhost' IDENTIFIED BY 'redhat';
+FLUSH PRIVILEGES;`
+quit
+
+use `osp_sql_create` script to ensure proper DB creation. This script will create a service.sql file
+
+`[On Controller]`
+....
+/root/osp_sql_create nova nova
+....
+
+Then execute the following command to create the database.
+
+`[On Controller]`
+....
+mysql -u root -p < /root/nova.sql
+....
+TIP: Run the following command to inject SQL to database
+`mysql -u root -p < /root/nova.sql`
+
+
+==== Create nova db tables
+`[On Controller]`
+....
+su -s /bin/sh -c "nova-manage db sync" nova
+....
+
+==== Configure nova to use Qpid (On Controller)
+
+`[On Controller]`
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT rpc_backend nova.openstack.common.rpc.impl_qpid
+openstack-config --set /etc/nova/nova.conf DEFAULT qpid_hostname ${OSPCTRL}
+....
+
+==== Configure nova to use keystone authentication
+
+`[On Controller]`
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT auth_strategy keystone
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_protocol http
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_port 35357
+openstack-config --set /etc/nova/nova.conf keystone_authtoken admin_user nova
+openstack-config --set /etc/nova/nova.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/nova/nova.conf keystone_authtoken admin_password redhat
+....
+
+
+
+=== Firewall configuration for VNC
+`[On Controller]`
+....
+lokkit --port 6080-6081:tcp
+....
+
+==== Configure VNC for console access to cloud instances
+`[On Controller]`
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT my_ip ${OSPCTRL}
+openstack-config --set /etc/nova/nova.conf DEFAULT vncserver_listen ${OSPCTRL}
+openstack-config --set /etc/nova/nova.conf DEFAULT vncserver_proxyclient_address ${OSPCTRL}
+....
+
+==== Firewall configuration for VNC
+
+`[On Controller]`
+....
+lokkit --port 6080-6081:tcp
+....
+
+==== Create a nova user assign admin role:
+TIP: Make srue that you have sourced the keystone_admin.rc 
+
+`[On Controller]`
+....
+keystone user-create --name=nova --pass=redhat 
+keystone user-role-add --user=nova --tenant=service --role=admin
+....
+
+==== Configure Compute to use keystone authentication
+`[On Controller]`
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT auth_strategy keystone
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_protocol http
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_port 35357
+openstack-config --set /etc/nova/nova.conf keystone_authtoken admin_user nova
+openstack-config --set /etc/nova/nova.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/nova/nova.conf keystone_authtoken admin_password redhat
+....
+
+==== Register the compute service
+NOTE: OpenStack services can locate available service via the Keystone Service Registy.
+
+`[On Controller]`
+....
+keystone service-create --name=nova --type=compute --description="OpenStack Compute Service"
+....
+
+==== Create Compute Service endpoint
+`[On Controller]`
+....
+keystone endpoint-create \
+--service-id=$(keystone service-list | awk '/ compute / {print $2}') \
+--publicurl=http://${OSPCTRL}:8774/v2/%\(tenant_id\)s \
+--internalurl=http://${OSPCTRL}:8774/v2/%\(tenant_id\)s \
+--adminurl=http://${OSPCTRL}:8774/v2/%\(tenant_id\)s
+....
+
+=== Start Compute services and enable on system boots:
+Now we are ready to start the nova management services along with the VNC proxy services on the controller node. Use chkconfig to enable the service on bootup
+
+`[On Controller]`
+....
+service openstack-nova-api start
+service openstack-nova-cert start
+service openstack-nova-consoleauth start
+service openstack-nova-scheduler start
+service openstack-nova-console start
+service openstack-nova-conductor start
+service openstack-nova-novncproxy start
+
+chkconfig openstack-nova-api on
+chkconfig openstack-nova-cert on
+chkconfig openstack-nova-consoleauth on
+chkconfig openstack-nova-scheduler on
+chkconfig openstack-nova-console on
+chkconfig openstack-nova-conductor on
+chkconfig openstack-nova-novncproxy on
+....
+
+=== Verify nova-glance communication
+NOTE:Verify that Nova can talk to Glance by querying the images through nova
+
+`[On Controller]`
+....
+nova image-list
+....
+ 
+.Sample Output:
+----
++--------------------------------------+--------------+--------+--------+ 
+| ID                                   | Name         | Status | Server | 
++--------------------------------------+--------------+--------+--------+ 
+| a6f0fb2c-8c8e-4a49-8578-3f1e3617a8d9 | cirros_cloud | ACTIVE |        | 
++--------------------------------------+--------------+--------+--------+ 
+----
+
+<<<<
+
+=== Setup Nova compute services  on Compute Node
+
+TIP: ssh to the compute node in a separate shell
+....
+ssh root@nova0-<guid>.rhpds.opentlc.com
+....
+
+OpenStack Compute services are provided the following package
+
+`openstack-nova-compute` - Provides the OpenStack Compute service. This will be installed on all Compute nodes in our environment.
+
+
+===  Install the Compute Service packages Compute Node.
+
+`[On Compute]`
+....
+yum -y install openstack-nova-compute 
+....
+
+=== Firewall configuration for Nova
+
+The node that hosts VNC access to instances must be configured to allow VNC traffic through its firewall. By default, the openstack-nova-novncproxy service listens on TCP port 6080 and the openstack-nova-xvpvncproxy service listens on TCP port 6081. Connections from Compute Nodes to the Controller Nova API Services are received on the ports in the range of 8773-8775.
+
+`[On Compute/Controller]`
+....
+lokkit --port 6080-6081:tcp
+lokkit --port 8773-8775:tcp
+lokkit --port 5900-5999:tcp
+....
+
+=== Setup VNC for nova
+We will set the external hostname or the external ip address of the controller node in the VNC BASE URL
+
+
+`[On Compute]`
+
+NOTE: EXT_OSPCTRL should be the hostname of your controller
+....
+export EXT_OSPCTRL=(Enter the hostname of your controller)
+openstack-config --set /etc/nova/nova.conf DEFAULT novncproxy_base_url http://${EXT_OSPCTRL}:6080/vnc_auto.html
+....
+
+TIP: `echo $EXT_OSPCTRL` to verify its set correctly)
+
+=== Configure Compute to provide remote console access to instances.
+`[On Compute]`
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT my_ip ${NOVA}  
+openstack-config --set /etc/nova/nova.conf DEFAULT vnc_enabled True
+openstack-config --set /etc/nova/nova.conf DEFAULT vncserver_listen 0.0.0.0
+openstack-config --set /etc/nova/nova.conf DEFAULT vncserver_proxyclient_address ${NOVA}  
+....
+
+==== Configure nova to use keystone authentication (On Compute Node)
+
+. Set the authentication strategy (auth_strategy) configuration key to keystone using the openstack-config command. 
+. Set the authentication host (auth_host) configuration key to the IP address or host name of the identity server.  It is defined in both the api and nova configuration files.
+. Set the authentication port (auth_port), protocol (auth_protocol) configuration key to the port for HTTP and HTTP, respectively.  It is defined in both the api and nova configuration files.
+. Set the administration tenant name (admin_tenant_name) configuration key to the name of the tenant that was created for the use of the Compute service.
+. Set the administration user name (admin_user) configuration key to the name of the user that was created for the use of the Compute service. In this guide, examples use nova. 
+. Set the administration password (admin_password) configuration key to the password that is associated with the user specified in the previous step.
+
+`[On Compute]`
+....
+openstack-config --set /etc/nova/nova.conf database connection mysql://nova:redhat@${OSPCTRL}/nova
+openstack-config --set /etc/nova/nova.conf DEFAULT auth_strategy keystone
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_protocol http
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_port 35357
+openstack-config --set /etc/nova/nova.conf keystone_authtoken admin_user nova
+openstack-config --set /etc/nova/nova.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/nova/nova.conf keystone_authtoken admin_password redhat
+....
+
+TIP: The authentication keys used by the Compute services have been set and will be used when the services are started. 
+
+==== Configure nova to use Qpid (On Compute Node)
+
+The Compute services must be explicitly configured with the type, location, and authentication details of the message broker. 
+
+`[On Compute]`
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT rpc_backend nova.openstack.common.rpc.impl_qpid
+openstack-config --set /etc/nova/nova.conf DEFAULT qpid_hostname ${OSPCTRL}
+....
+
+
+==== Inform nova of image services
+
+`[On Compute]`
+....
+openstack-config --set /etc/nova/nova.conf DEFAULT glance_host ${OSPCTRL}
+....
+
+==== Use virtio for bridges
+WARNING: Virtio seting must be set to true and both Controller and Compute Node
+
+`[On Compute/On Controller]`
+....
+ openstack-config --set /etc/nova/nova.conf libvirt use_virtio_for_bridges true
+....
+
+=== Set virt_type on Compute
+NOTE: In production you will use virt_type that matches you hardware and environment. The inspect if you can run in kvm mode run the following command:
+
+[TIP]
+`[On Compute Nodes]`
+....
+egrep -c '(vmx|svm)' /proc/cpuinfo
+....
+
+If the value returned is *greater than 0* then; your system's processor and/or hypervisor support hardware acceleration for virtual machines.
+
+WARNING: If `egrep -c '(vmx|svm)' /proc/cpuinfo` return a value of `0` you need to run in `qemu` mode
+
+
+`[On Compute only]` IF in *QEMU MODE*
+
+****
+....
+openstack-config --set /etc/nova/nova.conf libvirt virt_type qemu
+openstack-config --set /etc/nova/nova.conf DEFAULT compute_driver libvirt.LibvirtDriver
+openstack-config --set /etc/nova/nova.conf DEFAULT libvirt_cpu_mode none
+....
+****
+
+[TIP]
+Your lab environment will on the osp5[a-d] domain will support hardware acceleration
+Use kvm mode in this lab
+
+`[On Compute`] only if *Bare Metal* or *Hardware accelerated*
+....
+openstack-config --set /etc/nova/nova.conf libvirt virt_type kvm
+openstack-config --set /etc/nova/nova.conf DEFAULT compute_driver libvirt.LibvirtDriver
+openstack-config --set /etc/nova/nova.conf DEFAULT cpu_mode host-passthrough
+....
+
+=== Start nova and enable of boot
+Now we are ready to start Nova compute services on the compute node. Use chkconfig to  enable the compute services on boot
+
+`[On Compute]`
+....
+service messagebus restart
+service libvirtd start
+service openstack-nova-compute start
+
+chkconfig libvirtd on
+chkconfig messagebus on
+chkconfig openstack-nova-compute on
+....
+
+=== Verify controller communication to nova
+NOTE: Logon to controller and verify that your compute node is added properly
+
+`[On Controller]`
+....
+nova hypervisor-list 
+....
+
+TIP: Make sure you environment is sourced properly
+
+.Sample Output:
+----
++----+------------------------------+
+| ID | Hypervisor hostname          |
++----+------------------------------+
+| 1  | nova0-e34b.rhpds.opentlc.com |
++----+------------------------------+
+----
+

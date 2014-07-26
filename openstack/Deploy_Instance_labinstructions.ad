@@ -1,0 +1,182 @@
+=== Deploying an Instance via the CLI
+
+
+=== List Available Flavors
+NOTE: To perform this lab we need first to find out few things, the flavor size and the image we want to start, plus we have to give it a name:
+
+TIP: Source your admin credentials
+`[On Controller]`
+....
+source keystone_admin.rc
+....
+
+=== List nova flavors
+
+*The output for the last command will be a list of available flavors to choose from each with it's own characteristics. Later in this lab we will use one of them.*
+`[On Controller]`
+....
+nova flavor-list
+....
+
+=== Creating a New Flavor
+
+Let's now create a new flavor that will enable us to create custom flavor that we can use in the open lab environment. We are going to give this flavor an id of `20`. 
+TIP: flavor id 1 to 5 are default to OpenStack
+
+`[On Controller]`
+....
+nova flavor-create openlab.flavor 20 512 2 1
+....
+
+.Sample Output:
+----
++----+----------------+-----------+------+-----------+------+-------+-------------+-----------+
+| ID | Name           | Memory_MB | Disk | Ephemeral | Swap | VCPUs | RXTX_Factor | Is_Public |
++----+----------------+-----------+------+-----------+------+-------+-------------+-----------+
+| 20 | openlab.flavor | 2048      | 0    | 0         |      | 5     | 1.0         | True      |
++----+----------------+-----------+------+-----------+------+-------+-------------+-----------+
+----
+
+=== Delete unwanted flavors
+In this step we are going to delete the existing flavors and create a new flavor that will suit our environment
+
+To delete default flavors 
+
+....
+for i in 1 2 3 4 5 ; do nova flavor-delete  $i && echo "Deleted flavor $i"; done
+....
+
+Do `nova flavor-list` you should only see the custom flavor we created
+
+....
+nova flavor-list
+....
+
+.Sample Output:
+----
++----+----------------+-----------+------+-----------+------+-------+-------------+-----------+
+| ID | Name           | Memory_MB | Disk | Ephemeral | Swap | VCPUs | RXTX_Factor | Is_Public |
++----+----------------+-----------+------+-----------+------+-------+-------------+-----------+
+| 20 | openlab.flavor | 512       | 2    | 0         |      | 1     | 1.0         | True      |
++----+----------------+-----------+------+-----------+------+-------+-------------+-----------+
+----
+
+=== Generate a key pair (fedora.pem)
+We are going to add keypair
+
+....
+nova keypair-add fedora > /root/fedora.pem
+chmod 0600 /root/fedora.pem
+....
+
+=== Launch an instance via the cli
+`[On Controller]`
+....
+ nova net-list
+....
+
+.Sample Output:
+----
++--------------------------------------+----------+------+
+| ID                                   | Label    | CIDR |
++--------------------------------------+----------+------+
+| 290111c0-e341-4288-92b2-753362072ec2 | external | -    |
+| 5d725605-963a-41a2-946e-2f135fe76466 | intranet | -    |
++--------------------------------------+----------+------+`
+----
+NOTE: We will launching the image on the internal network
+
+`[On Controller]`
+Boot and instance using the newly create flavor id `20`
+Use image `fedora19`
+
+Set the `net-id` to use the `intranet` network
+Name the instance `vm0`
+
+TIP: Use `glance image-list` if you want to see all the available images
+....
+nova boot --flavor 20 --image openlab_f20 --nic net-id=`nova net-list | grep intranet | awk -F'| ' '{print $2}'` --security_groups openlab --key-name fedora  vm0 
+....
+
+
+.Sample Output:
+----
++--------------------------------------+-----------------------------------------------------+
+| Property                             | Value                                               |
++--------------------------------------+-----------------------------------------------------+
+| OS-DCF:diskConfig                    | MANUAL                                              |
+| OS-EXT-AZ:availability_zone          | nova                                                |
+| OS-EXT-SRV-ATTR:host                 | -                                                   |
+| OS-EXT-SRV-ATTR:hypervisor_hostname  | -                                                   |
+| OS-EXT-SRV-ATTR:instance_name        | instance-00000001                                   |
+| OS-EXT-STS:power_state               | 0                                                   |
+| OS-EXT-STS:task_state                | scheduling                                          |
+| OS-EXT-STS:vm_state                  | building                                            |
+| OS-SRV-USG:launched_at               | -                                                   |
+| OS-SRV-USG:terminated_at             | -                                                   |
+| accessIPv4                           |                                                     |
+| accessIPv6                           |                                                     |
+| adminPass                            | nDRfU4XXoRAf                                        |
+| config_drive                         |                                                     |
+| created                              | 2014-05-13T21:01:21Z                                |
+| flavor                               | m1.small (2)                                        |
+| hostId                               |                                                     |
+| id                                   | f392cebc-23d8-4f56-b9cb-4555cc3f4998                |
+| image                                | cirros_cloud (3eff3de0-4d5a-4b3d-a6bc-5836e65f86d6) |
+| key_name                             | -                                                   |
+| metadata                             | {}                                                  |
+| name                                 | vm0                                                 |
+| os-extended-volumes:volumes_attached | []                                                  |
+| progress                             | 0                                                   |
+| security_groups                      | default                                             |
+| status                               | BUILD                                               |
+| tenant_id                            | 856a1a299fca4cfbb56794ea444a2d4a                    |
+| updated                              | 2014-05-13T21:01:21Z                                |
+| user_id                              | e52aa88431674f618d451b26b9c93854                    |
++--------------------------------------+-----------------------------------------------------+
+----
+
+==== Assign a floating up
+Get the port id of `vm0` 
+
+....
+neutron port-list --device_id  `nova list | awk '/vm0 / {print $2}'` | awk '/ip_address/ {print $2}' >/tmp/vm0.portid
+neutron  floatingip-create  --port-id=`cat /tmp/vm0.portid` external
+....
+
+.Sample Output
+----
++---------------------+--------------------------------------+
+| Field               | Value                                |
++---------------------+--------------------------------------+
+| fixed_ip_address    | 10.0.0.2                             |
+| floating_ip_address | 192.168.0.127                        |
+| floating_network_id | 61269953-593c-4265-b2f4-cb0756fd0b8d |
+| id                  | dda402b4-ebfd-4c44-9e34-2d19e8c6adfd |
+| port_id             | 118d1cfd-b563-4579-9327-3f39eac902eb |
+| router_id           | de956cc2-fd54-42c5-be05-c74f3053d70d |
+| status              | DOWN                                 |
+| tenant_id           | 887f5c39b5f84a7190d6dbd2bf5e3dc8     |
++---------------------+--------------------------------------+
+----
+
+==== Check Status of instance
+
+Use `nova list` to query you cloud instance
+
+`[On Controller]`
+....
+nova list
+....
+
+.Sample Output:
+----
++--------------------------------------+------+--------+------------+-------------+--------------------+
+| ID                                   | Name | Status | Task State | Power State | Networks           |
++--------------------------------------+------+--------+------------+-------------+--------------------+
+| 094177a7-378d-4d47-bbca-2889eb5a5065 | vm0  | ACTIVE | -          | Running     | intranet=10.0.0.2, |
+|                                      |      |        |            |             |      192.168.0.127 |
++--------------------------------------+------+--------+------------+-------------+--------------------+
+----
+
+

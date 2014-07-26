@@ -1,0 +1,424 @@
+=== Identity Service
+
+The OpenStack identity service know as keystone. In this chapter we will install a configure keystone. Once configured we will use keystone to create authentication ties between the OpenStack components.
+
+TIP: In order to understand OpenStack you need to have a good grasp of keystone and how it works. 
+
+`Token:` A randomly generated string of characters that is used to authenticate resource access. Each token has a scope which describes which resources are accessible with it. A token may be revoked at any time and is valid till its revoked
+
+`User:` A consumer or administrator object  Users have a login and may be assigned tokens to specific resources. 
+
+`Credentials`: User name and password, user name and API key, or an authentication token provided by keystone.
+
+`Service:` OpenStack has a growing list of services. A example of a service is keystone itself. A service that provide authentication and identity management. A task specific engine that provide a given infrastructure service
+
+`Service catalog:` Provides a catalog of available OpenStack services with their API endpoints addresses.
+
+`Role:` A role is a set of rights and privileges. A user that is assigned to a role inherits those rights and privileges
+
+The steps listed in this procedure install the packages required by the OpenStack identity service. The packages that will be installed are: 
+`openstack-keystone` - Provides the OpenStack Identity service. 
+`python-keystoneclient` - Provides Python keystone client
+
+=== Install keystone packages 
+
+`[On Controller]`
+
+....
+yum -y install openstack-keystone python-keystoneclient
+....
+
+=== Firewall configuration for keystone
+As the identity service is used for authentication by all the components in the OpenStack environment it must be accessible by them. To allow this the firewall on our controller must be altered to allow network traffic on the required port 5000 and 35357
+
+`[On Controller]`
+
+....
+lokkit --port 5000:tcp
+lokkit --port 35357:tcp 
+....
+
+The iptables firewall is now configured to allow incoming connections to the identity service on ports 5000 and 35357. 
+
+
+=== Setup database keystone
+
+The database connection string has been updated for this openstack release `(icehouse)` The connection string will be used by the identity service to store persistent data. A valid database must be set before starting the service. 
+
+TIP: Use the openstack-config command to set the value of the connection configuration key. 
+
+`[On Controller]`
+....
+openstack-config --set /etc/keystone/keystone.conf database connection mysql://keystone:redhat@${OSPCTRL}/keystone
+....
+
+==== Create keystone database
+In this step we are going to create a database for the keystone identity server and set the password to redhat
+
+TIP: Use the script provide to create the database db root password is `redhat`
+
+*Example SQL*
+# mysql -u root -p
+
+CREATE DATABASE keystone;
+GRANT ALL ON keystone.* TO 'keystone'@'YOUR_FULL_HOSTNAME' IDENTIFIED BY 'redhat';
+GRANT ALL ON keystone.* TO 'keystone'@'%' IDENTIFIED BY 'redhat';
+GRANT ALL ON keystone.* TO 'keystone'@'localhost' IDENTIFIED BY 'redhat';
+FLUSH PRIVILEGES;
+quit
+
+use `osp_sql_create` script to ensure proper DB creation. This script will create a service.sql file
+
+`[On Controller]`
+....
+/root/osp_sql_create keystone keystone
+....
+
+Then execute the following command to create the database.
+
+`[On Controller]`
+....
+mysql -u root -p < /root/keystone.sql
+....
+
+TIP: Run the following command to inject SQL to database
+`mysql -u root -p < /root/keystone.sql`
+
+==== Create all tables for keystone
+NOTE: This command create the database tables for the Identity Service
+
+`[On Controller]`
+....
+su -s /bin/sh -c "keystone-manage db_sync" keystone
+....
+
+
+=== Setup temporary authentication
+Before the identity service is started for the first time you must define an administrative token in an environment variable. This value will be used for authentication before user and service accounts have been defined using the identity service. 
+
+Use OpenSSL to generate an initial service token and save it in the SERVICE_TOKEN environment variable. 
+
+Stores the value of the administration token in the file ~/ks_admin_token for future use.
+
+`[On Controller]`
+....
+# export OS_SERVICE_TOKEN environment variable
+export OS_SERVICE_TOKEN=$(openssl rand -hex 10)
+echo $OS_SERVICE_TOKEN
+echo $OS_SERVICE_TOKEN > ~/ks_admin_token
+# export OS_SERVICE_ENDPOINT environment variable
+export OS_SERVICE_ENDPOINT=http://${OSPCTRL}:35357/v2.0
+echo $OS_SERVICE_ENDPOINT
+....
+
+TIP: The administration token for the identity service has been created. This value will be used in subsequent identity configuration procedures. 
+
+=== Configure /etc/keystone/keystone.conf
+Use the openstack-config tool to set the value of the admin_token configuration key to that of the newly created token. 
+`[On Controller]`
+....
+openstack-config --set /etc/keystone/keystone.conf DEFAULT admin_token $OS_SERVICE_TOKEN
+....
+
+
+==== Create signing keys 
+By default, Keystone uses PKI tokens to create the signing keys and certificates as well as restrict access to the generated data. This procedure includes the steps required to configure the PKI files for use by the identity service. 
+
+All steps listed in this procedure must be performed while logged in as root
+
+
+`[On Controller]`
+....
+keystone-manage pki_setup --keystone-user keystone --keystone-group keystone
+
+chown -Rv keystone:keystone /etc/keystone/ssl
+chmod -Rv o-rwx /etc/keystone/ssl
+chown -Rv keystone:keystone /var/log/keystone /etc/keystone/*
+....
+
+TIP: The identity service PKI infrastructure files have been created and will be used when generating and signing tokens. 
+
+==== Start keystone and enable on system boots
+Use the chkconfig command to enable the keystone services and to start it automatically at boot. 
+
+`[On Controller]`
+....
+service openstack-keystone start
+chkconfig openstack-keystone on
+....
+
+=== Create keystone user administration
+
+Tenants are used to aggregate service resources (tenants are also known as projects). Per tenant, quota controls can be used to limit the numbers of resources i.e. managing quotas. 
+Each user is assigned to a tenant. For regular users, their tenant typically represents their group, project, or organization. For service users (the entity accessing the Identity service on behalf of the service), the tenant represents a service's geographical region. This means that if your cloud's services are: 
+
+Distributed, typically one service tenant is created for each endpoint on which services are running (excepting the Identity and Dashboard services). 
+
+Deployed on a single node, only one service tenant is required (but of course this is just one option; more can be created for administrative purposes). 
+
+
+NOTE: This guide puts will install most of the OpenStack services on the controller, but the compute and network are being deployed on dedicated node, therefore only one service tenant is required; all guide examples use the services tenant.  
+
+In real life because administrators, regular users, and service users all need a tenant, at least multiple tenants are typically created.
+
+Use the following keystone user-create command to create an admin user
+
+`[On Controller]`
+....
+keystone user-create --name=admin --pass=redhat
+keystone user-create --name=student --pass=redhat
+....
+
+.Sample Output:
+----
++----------+----------------------------------+ 
+| Property |              Value               | 
++----------+----------------------------------+ 
+|  email   |                                  | 
+| enabled  |               True               | 
+|    id    | ff3e5d93cb3248e2971f7e7e3da3ddcb | 
+|   name   |              admin               | 
+| username |              admin               | 
++----------+----------------------------------+ 
+----
+
+==== Create the admin role
+Use the keystone role-create command to create an admin role
+`[On Controller]`
+
+....
+keystone role-create --name=admin 
+....
+
+.Sample Output:
+----
++----------+----------------------------------+ 
+| Property |              Value               | 
++----------+----------------------------------+ 
+|    id    | 0c251eae9b454464bc81569a0c76146e | 
+|   name   |              admin               | 
++----------+----------------------------------+ 
+----
+
+==== Create the admin and student tenants
+Use the keystone tenant-create command to create an admin and a student tenant 
+
+`[On Controller]`
+....
+keystone tenant-create --name=admin --description="Admin Tenant"
+keystone tenant-create --name=student --description="Student Tenant"
+....
+
+.Sample Output:
+----
++-------------+----------------------------------+ 
+|   Property  |              Value               | 
++-------------+----------------------------------+ 
+| description |           Admin Tenant           | 
+|   enabled   |               True               | 
+|      id     | 839d9cbcf4664719acabb9b6296fb7db | 
+|     name    |              admin               | 
++-------------+----------------------------------+
+----
+
+==== Link users to tenants
+Link the admin user,admin role, and admin tenant together using the user-role-add option:
+ 
+`[On Controller]`
+....
+keystone user-role-add --user=admin --tenant=admin --role=admin
+....
+
+Link the demo user, to _member_ role and sudent tenant
+Link the admin user, to _member_ role and admin tenant
+
+`[On Controller]`
+....
+keystone user-role-add --user=admin --role=_member_ --tenant=admin
+keystone user-role-add --user=student --role=_member_ --tenant=student
+....
+
+
+==== Create the keystone service tenant
+
+To create the services tenant: 
+
+`[On Controller]`
+....
+keystone tenant-create --name=service --description="Service Tenant"
+....
+
+
+=== Create identity service
+
+Create the identity service and register it with keystone itsetlf. We will do similar actions for all OpenStack services. Please take note of the unique identifier assigned to the entry (id field). This value will be required in subsequent steps. 
+
+`[On Controller]`
+....
+keystone service-create --name=keystone --type=identity --description="OpenStack Identity Service"
+....
+
+.Sample Output:
+----
++-------------+-----------------------------------+ 
+|   Property  |               Value               | 
++-------------+-----------------------------------+ 
+| description |  OpenStack Identity Service       | 
+|   enabled   |                True               | 
+|      id     |  82f4ec6c4eda46e0888248203eb49051 | 
+|     name    |              keystone             | 
+|     type    |              identity             | 
++-------------+-----------------------------------+ 
+----
+
+NOTE: Register the Identity Service itself using the OS_SERVICE_TOKEN
+
+
+=== Create the Identity Service endpoint
+Once the identity service has been started its API endpoint must be defined. 
+
+WARNING: Some OpenStack services including the dashboard will not work unless this record is present. 
+
+
+`[On Controller]`
+....
+keystone endpoint-create \
+--service-id=$(keystone service-list | awk '/ identity / {print $2}') \
+--publicurl=http://${OSPCTRL}:5000/v2.0 \
+--internalurl=http://${OSPCTRL}:5000/v2.0 \
+--adminurl=http://${OSPCTRL}:35357/v2.0
+....
+
+.Sample Output:
+----
++-------------+----------------------------------+ 
+|   Property  |              Value               | 
++-------------+----------------------------------+ 
+|   adminurl  |  http://192.168.0.31:35357/v2.0  | 
+|      id     | 7ca6142348f74313b26b3d6bca0bea84 | 
+| internalurl |  http://192.168.0.31:5000/v2.0   | 
+|  publicurl  |  http://192.168.0.31:5000/v2.0   | 
+|    region   |            regionOne             | 
+|  service_id | 82f4ec6c4eda46e0888248203eb49051 | 
++-------------+----------------------------------
+----
+
+NOTE: You output should be similar except for your unique id's
+
+=== Verify that the Identity Service 
+
+TIP: Unseting the values in the OS_SERVICE_TOKEN and OS_SERVICE_ENDPOINT will force authentication via keystone admin user
+
+==== Unset OS_SERVER environment variables
+
+`[On Controller]`
+....
+unset OS_SERVICE_TOKEN
+unset OS_SERVICE_ENDPOINT 
+....
+
+=== Create OpenStack CLI Authentication Profiles
+
+==== Set up a keystone_student.rc
+
+NOTE: This keystone profile contain the student credentials and admin endpoint url. This student profile is used to demonstrate a semi privileged user
+
+`[On Controller]`
+....
+cat > /root/keystone_student.rc <<EOF
+# Redhat OpenStack 5 Keystone admin profile
+export OS_USERNAME='student'
+export OS_PASSWORD='redhat'
+export OS_TENANT_NAME='student'
+export OS_AUTH_URL='http://${OSPCTRL}:35357/v2.0/'
+PS1="\h(keystone_student):\w# "
+EOF
+....
+
+
+==== Set up a keystone_admin.rc 
+The newly created admin account will be used for future management of the identity service. To facilitate authentication, create a /root/keystonerc_admin.rc file in a secure location such as the home directory of the root user. 
+
+
+The following procedure will add these lines to the file to set the environment variables that will be used for authentication:
+
+
+NOTE: This keystone profile below contain the admin credentials and admin endpoint URL. It must sourced before you run any OpenStack commands.
+
+`[On Controller]`
+....
+cat > /root/keystone_admin.rc <<EOF 
+# Redhat OpenStack 5 Keystone admin profile
+export OS_USERNAME='admin' 
+export OS_PASSWORD='redhat' 
+export OS_TENANT_NAME='admin' 
+export OS_AUTH_URL='http://${OSPCTRL}:35357/v2.0/'
+PS1="\h(keystone_admin):\w# "
+EOF 
+....
+
+An administration user account, role, and tenant have been defined in the Identity server. The keystonerc_admin.rc file has also been created for authenticating as the admin user.
+
+=== Verify keystone
+==== Source your admin credintials
+
+Executing the following procedure will result in an authenticated OpenStack administrator shell
+
+`[On Controller]`
+....
+source keystone_admin.rc  
+....
+
+TIP: When you properly sourced your shell prompt should state (keystone_admin)
+*Lists of all tenants and their IDs:*
+
+`[On Controller]`
+....
+keystone tenant-list
+....
+
+.Sample Output:
+----
++----------------------------------+---------+---------+
+|                id                |   name  | enabled |
++----------------------------------+---------+---------+
+| 09d541705145437d842a77160b2ae887 |  admin  |   True  |
+| e60ec0e2e4de40cc98297b62c80e0b91 | student |   True  |
+| 2d4e38eac04946bcbd61d4b081dfdb47 | service |   True  |
++----------------------------------+---------+---------+
+----
+
+*List of all users and their IDs:*
+
+`[On Controller]`
+....
+keystone user-list
+....
+
+.Sample Output:
+----
++----------------------------------+---------+---------+-------+
+|                id                |   name  | enabled | email |
++----------------------------------+---------+---------+-------+
+| 20acd4d5c2fc40b788dc89b0af174eea |  admin  |   True  |       |
+| 4e5bb18c7cb9426180fd683e787bbf90 | student |   True  |       |
++----------------------------------+---------+---------+-------+
+----
+
+*List of all roles and their IDs:*
+
+`[On Controller]`
+....
+keystone role-list
+....
+
+.Sample Output:
+----
++----------------------------------+----------+
+|                id                |   name   |
++----------------------------------+----------+
+| 9fe2ff9ee4384b1894a90878d3e92bab | _member_ |
+| 8314db21e53b4dc7b7dde9937e046c5a |  admin   |
++----------------------------------+----------+
+----
+

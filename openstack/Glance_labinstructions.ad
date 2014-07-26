@@ -1,0 +1,265 @@
+=== Image Service 
+
+To install the Image service, you must have access to: MySQL database server root credentials and IP address Identity service administrator credentials and endpoint URL
+
+=== Install glance packages
+
+`[On Controller]`
+....
+yum -y install openstack-glance
+....
+
+=== Firewall configuration for glance
+The OpenStack image service serves bootable system images to the compute nodes. In this chapter we will install and configure the image service. The server hosting the image service needs to allow network traffic on the port 9292
+
+TIP: To install the Image service, you must source the keystone_admin.rc
+
+`[On Controller]`
+....
+lokkit --port 9292:tcp
+....
+
+The iptables firewall is now configured to allow incoming connections to the image storage service on port 9292. 
+
+
+NOTE: Systems attempting to use the functionality provided by the image storage service access it over the network using port 9292. 
+To allow this, the Image service is configured to recognize the 9292 port, and the firewall on the system hosting the image storage service is altered to allow network traffic on the port. 
+
+TIP: All steps in this procedure must be run while logged in  as the root user.
+....
+source keystone_admin.rc
+....
+=== Setup database for glance
+Use the openstack-config command to set the value of the `connection` configuration key in the /etc/glance/glance-api.conf file. 
+
+`[On Controller]`
+....
+openstack-config --set /etc/glance/glance-api.conf \
+database connection mysql://glance:redhat@${OSPCTRL}/glance
+....
+
+=== Create glance database
+TIP: Use the script provide to create the database db root password is `redhat`
+
+*Example SQL*
+# mysql -u root -p
+
+CREATE DATABASE glance;
+GRANT ALL ON glance.* TO 'glance'@'YOUR_FULL_HOSTNAME' IDENTIFIED BY 'redhat';
+GRANT ALL ON glance.* TO 'glance'@'%' IDENTIFIED BY 'redhat';
+GRANT ALL ON glance.* TO 'glance'@'localhost' IDENTIFIED BY 'redhat';
+FLUSH PRIVILEGES;
+quit
+
+use `osp_sql_create` script to ensure proper DB creation. This script will create a service.sql file
+
+`[On Controller]`
+....
+/root/osp_sql_create glance glance
+....
+
+Then execute the following command to create the database. 
+
+`[On Controller]`
+....
+mysql -u root -p < /root/glance.sql
+....
+
+=== Create glance db tables
+
+`[On Controller]`
+....
+su -s /bin/sh -c "glance-manage db_sync" glance
+....
+
+=== Configure /etc/glance/glance-registry.conf
+
+`[On Controller]`
+....
+openstack-config --set /etc/glance/glance-registry.conf \
+database connection mysql://glance:redhat@${OSPCTRL}/glance
+....
+
+=== Configure glance to use Qpid:
+`[On Controller]`
+....
+openstack-config --set /etc/glance/glance-api.conf DEFAULT rpc_backend qpid
+openstack-config --set /etc/glance/glance-api.conf DEFAULT qpid_hostname ${OSPCTRL}
+....
+
+=== Create glance service and users
+==== Create glance users
+Create a glance user that the Image Service can use to authenticate with the Identity service. Set the password to `redhat`. Use the service tenant and give the user the admin role:
+
+`[On Controller]`
+....
+keystone user-create --name=glance --pass=redhat 
+keystone user-role-add --user=glance --tenant=service --role=admin 
+....
+
+.Sample Output:
+----
++----------+----------------------------------+
+| Property |              Value               |
++----------+----------------------------------+
+|  email   |                                  |
+| enabled  |               True               |
+|    id    | 514cc47eb42a464591cd9d0fb5d4c7fa |
+|   name   |              glance              |
+| username |              glance              |
++----------+----------------------------------+
+----
+
+=== Configure glance to use keystone authentication
+
+. Set the authentication strategy (auth_strategy) configuration key to Glance API using the openstack-config command.
+. Set the authentication host (auth_host) configuration key to the IP address or host name of the identity server. It is defined in both the api and nova configuration files.
+. Set the authentication port (auth_port), protocol (auth_protocol) configuration key to the port for HTTP and HTTP, respectively. 
+. Set the administration tenant name (admin_tenant_name) configuration key to the name of the tenant that was created for the use of the Image service.
+. Set the administration user name (admin_user) configuration key to the name of the user that was created for the use of the identity service. In this guide, examples use glance.
+. Set the administration password (admin_password) configuration key to the password that is associated with the user specified in the previous step.
+
+`[On Controller]`
+....
+openstack-config --set /etc/glance/glance-api.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000
+openstack-config --set /etc/glance/glance-api.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/glance/glance-api.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/glance/glance-api.conf keystone_authtoken admin_user glance
+openstack-config --set /etc/glance/glance-api.conf keystone_authtoken admin_password redhat
+openstack-config --set /etc/glance/glance-api.conf paste_deploy flavor keystone
+....
+
+
+We need to set the same tokens for the Glance registry 
+
+`[On Controller]`
+....
+openstack-config --set /etc/glance/glance-registry.conf keystone_authtoken auth_uri http://${OSPCTRL}:5000
+openstack-config --set /etc/glance/glance-registry.conf keystone_authtoken auth_host ${OSPCTRL}
+openstack-config --set /etc/glance/glance-registry.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/glance/glance-registry.conf keystone_authtoken admin_user glance
+openstack-config --set /etc/glance/glance-registry.conf keystone_authtoken admin_password redhat
+openstack-config --set /etc/glance/glance-registry.conf paste_deploy flavor keystone
+....
+
+=== Register the image service 
+
+`[On Controller]`
+....
+keystone service-create --name=glance --type=image --description="OpenStack Image Service"
+....
+
+.Sample Output:
+----
++-------------+----------------------------------+
+|   Property  |              Value               |
++-------------+----------------------------------+
+| description |     OpenStack Image Service      |
+|   enabled   |               True               |
+|      id     | bd09b15206ae412cbec37f2a132b88b2 |
+|     name    |              glance              |
+|     type    |              image               |
++-------------+----------------------------------+
+----
+
+=== Create the Image Service endpoint
+Register the Image Service with the Identity service so that other OpenStack services can locate it. Register the service and create the endpoint:
+
+`[On Controller]`
+....
+keystone endpoint-create \
+--service-id=$(keystone service-list | awk '/ image / {print $2}') \
+--publicurl=http://${OSPCTRL}:9292 \
+--internalurl=http://${OSPCTRL}:9292 \
+--adminurl=http://${OSPCTRL}:9292
+....
+
+.Sample Output:
+----
++-------------+----------------------------------+
+|   Property  |              Value               |
++-------------+----------------------------------+
+|   adminurl  |     http://192.168.0.31:9292     |
+|      id     | dd6c21a1dbea4f708bfe2ac0bf79b628 |
+| internalurl |     http://192.168.0.31:9292     |
+|  publicurl  |     http://192.168.0.31:9292     |
+|    region   |            regionOne             |
+|  service_id | bd09b15206ae412cbec37f2a132b88b2 |
++-------------+----------------------------------+
+----
+
+At this point you should have created all the supporting identity service entries required by the Image service.
+
+=== Start glance and enable on boot:
+Now that Glance has been configured, start the glance-api and glance-registry 
+
+`[On Controller]`
+....
+service openstack-glance-api start
+service openstack-glance-registry start
+chkconfig openstack-glance-api on
+chkconfig openstack-glance-registry on
+....
+
+=== Add cloud images to glance
+To launch instances based on images stored in the Image service, you must first upload one or more images into the Image service. 
+To facilitate this lab a custon fedora image with pre set root password has been pre-staged in `/images` we will use this image to for this OpenStack environment.
+
+To upload an image to the Image service follow this procedure: 
+
+NOTE: There are multiple way to load images into Glance below are two way of loading images. In this lab a custome openlab image have been staged into `/images` on your controller node 
+
+=== Upload Images to Glance
+
+`[On Controller]`
+....
+glance image-create --name=openlab_f20 --is-public=true --disk-format=qcow2 --container-format=bare < /images/fedora20_openlab.qcow2
+....
+
+.Sample Output:
+----
++------------------+--------------------------------------+
+| Property         | Value                                |
++------------------+--------------------------------------+
+| checksum         | 64d7c1cd2b6f60c92c14662941cb7913     |
+| container_format | bare                                 |
+| created_at       | 2014-04-29T18:46:59                  |
+| deleted          | False                                |
+| deleted_at       | None                                 |
+| disk_format      | qcow2                                |
+| id               | d955559e-99ee-4e21-aba4-67165e6680ac |
+| is_public        | True                                 |
+| min_disk         | 0                                    |
+| min_ram          | 0                                    |
+| name             | openlab_f20                          |
+| owner            | 09d541705145437d842a77160b2ae887     |
+| protected        | False                                |
+| size             | 13167616                             |
+| status           | active                               |
+| updated_at       | 2014-04-29T18:46:59                  |
+| virtual_size     | None                                 |
++------------------+--------------------------------------+
+----
+
+[NOTE]
+*You can also load the fedora qcow2 image directly by using the command below*
+glance image-create --name "Example Fedora 20" --disk-format qcow2 --container-format bare --is-public true --copy-from http://<url>.qcow2
+
+A common test image that can be used to validate OpenStack functionallity is Cirros: You can download the cirros image at http://cdn.download.cirros-cloud.net/0.3.1/cirros-0.3.1-x86_64-disk.img
+
+TIP: In this lab we will be using a fedora cloud image
+
+=== Verify that image is active
+`[On Controller]`
+....
+glance image-list 
+....
+
+.Sample Output:
+----
+| a6f0fb2c-8c8e-4a49-8578-3f1e3617a8d9 | cirros_cloud | qcow2 | bare| 13167616 | active | 
+----
+
+CAUTION: If all your validation tests went without any problem you have just finished the configuration of the Image service. In case you encountered a problem, please do not continue with other labs. It may suggest you have a deeper problem with your setup that needs to be fixed before moving forward.
+
+

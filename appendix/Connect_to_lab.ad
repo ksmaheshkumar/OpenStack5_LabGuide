@@ -1,0 +1,19 @@
+== Connecting to Lab
+Follow the instructions below to connect from Linux MacOS or Windows Operating Systems
+
+=== Linux
+Linux: Use Built in Terminal Show Applications>Terminal 
+[.left.thumb]
+image::appendix/linux_term.png[linux_term]
+
+=== MacOS
+MacOS: Use Built in Terminal Go to Spotlight and search Terminal 
+[.left.thumb]
+image::appendix/mac_term.png[mac_term]
+
+=== Windows
+Windows: Download putty save to desktop and launch
+Putty: download link http://the.earth.li/~sgtatham/putty/latest/x86/putty.exe
+[.left.thumb]
+image::appendix/windows_putty.png[win_term]
+
